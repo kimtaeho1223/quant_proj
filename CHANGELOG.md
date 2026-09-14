@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - 2026-09-14
+
+- Add OpenDART annual financial-statement collection and company lookup.
+- Verify filing dates by receipt number and retain distinct correction receipts.
+- Keep API keys session-only and sanitize network errors.
+- Live authenticated OpenDART collection remains unverified pending a user API key.
+
 ## 0.1.1 - 2026-09-14
 
 - Show the most recent attempt per symbol separately from collection history.

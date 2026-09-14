@@ -1,0 +1,51 @@
+from datetime import datetime
+import pandas as pd
+import streamlit as st
+from quantdesk.dart import DartClient, DartStore, DartError
+
+
+def render_dart(path):
+    store = DartStore(path)
+    st.subheader('재무정보 · OpenDART')
+    st.caption('연간 사업보고서 · 연결·별도 구분 · 공시 접수일 확인')
+    st.info('재무자료 수집 단계입니다. 실제 팩터 점수와 백테스트에는 아직 반영되지 않습니다.')
+    key = st.text_input('OpenDART 인증키', type='password', key='dart_api_key',
+                        help='이 브라우저 세션에서만 사용하며 파일이나 GitHub에 저장하지 않습니다.')
+    st.link_button('인증키 신청 / 관리', 'https://opendart.fss.or.kr/')
+    companies = store.companies()
+    if st.button('기업 목록 갱신', icon=':material/refresh:', key='dart_companies'):
+        try:
+            with st.spinner('기업 목록을 가져오는 중입니다.'):
+                companies = DartClient(key).companies()
+                store.save_companies(companies)
+            st.success(f'{len(companies):,}개 기업을 저장했습니다.')
+        except DartError as exc:
+            st.error(str(exc))
+    if companies:
+        stock = st.selectbox('기업', sorted(companies), format_func=lambda c: f"{companies[c]['name']} ({c})")
+        year = st.number_input('사업연도', min_value=2015, max_value=datetime.now().year, value=datetime.now().year - 1, step=1)
+        basis = st.radio('재무제표 기준', ['CFS', 'OFS'], format_func=lambda b: '연결' if b == 'CFS' else '별도', horizontal=True)
+        if st.button('연간 재무제표 수집', icon=':material/download:', type='primary'):
+            try:
+                with st.spinner('재무제표와 공시일을 확인하는 중입니다.'):
+                    data = DartClient(key).annual(companies[stock]['corp_code'], year, basis)
+                    store.save_statement(stock, year, basis, data)
+                st.success(f"저장 완료 · 공시일 {data['filed_at']}")
+            except DartError as exc:
+                st.error(str(exc))
+    else:
+        st.caption('기업 목록: 아직 없음')
+    st.subheader('저장된 재무제표')
+    statements = store.statements()
+    if not statements:
+        st.info('저장된 재무제표가 없습니다.')
+    for entry in statements:
+        name = companies.get(entry['stock'], {}).get('name', entry['stock'])
+        with st.expander(f"{name} · {entry['year']}년 · {entry['basis']} · 공시 {entry['filed_at']}"):
+            st.caption(f"수집 시각 {entry['fetched']}")
+            st.link_button('DART 공시 원문', 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + entry['receipt'])
+            fields = {'sj_nm':'재무제표', 'account_id':'계정 ID', 'account_nm':'계정명', 'thstrm_nm':'당기',
+                      'thstrm_amount':'당기 금액', 'frmtrm_amount':'전기 금액', 'currency':'통화'}
+            frame = pd.DataFrame(entry['rows'])
+            st.dataframe(frame[[f for f in fields if f in frame]].rename(columns=fields), hide_index=True)
+    st.caption('과거 시점 재현에는 당시 정정 전 원문과 이용 가능 시점의 추가 검증이 필요합니다.')

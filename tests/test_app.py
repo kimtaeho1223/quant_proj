@@ -13,6 +13,12 @@ class AppTests(unittest.TestCase):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(len(app.tabs), 5)
+                os.environ['QUANTDESK_DART_DB'] = folder + '/dart.db'
+                app.radio(key='page').set_value('재무정보').run()
+                self.assertEqual(len(app.exception), 0)
+                app.button(key='dart_companies').click().run()
+                self.assertTrue(any('40자리' in item.value for item in app.error))
+                self.assertEqual(len(app.exception), 0)
                 os.environ['QUANTDESK_MARKET_DB'] = folder + '/market.db'
                 app.radio(key='page').set_value('실제 주가 데이터').run()
                 self.assertEqual(len(app.exception), 0)
@@ -27,3 +33,4 @@ class AppTests(unittest.TestCase):
             finally:
                 os.environ.pop('QUANTDESK_DB', None)
                 os.environ.pop('QUANTDESK_MARKET_DB', None)
+                os.environ.pop('QUANTDESK_DART_DB', None)
