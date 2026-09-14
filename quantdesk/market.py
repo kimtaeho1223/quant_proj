@@ -54,6 +54,10 @@ class MarketStore(Store):
             db.execute('INSERT INTO market_logs(code,status,message,fetched) VALUES (?,?,?,?)',
                        (code, status, message, datetime.now(ZoneInfo('Asia/Seoul')).isoformat(timespec='seconds')))
 
+    def latest_results(self):
+        with self.connect() as db:
+            return pd.read_sql_query('SELECT code AS 종목코드, status AS 상태, message AS 내용, fetched AS 수집시각 FROM market_logs WHERE id IN (SELECT MAX(id) FROM market_logs GROUP BY code) ORDER BY id DESC', db)
+
     def logs(self):
         with self.connect() as db:
             return pd.read_sql_query('SELECT code AS 종목코드, status AS 상태, message AS 내용, fetched AS 수집시각 FROM market_logs ORDER BY id DESC LIMIT 500', db)

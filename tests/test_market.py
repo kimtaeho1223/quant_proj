@@ -11,6 +11,17 @@ def prices():
 
 
 class MarketTests(unittest.TestCase):
+    def test_latest_results_keep_only_last_attempt_per_symbol(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+            store.record('005930', '실패', 'old failure')
+            store.record('000660', '실패', 'still failed')
+            store.record('005930', '성공', 'recovered')
+            latest = store.latest_results()
+            self.assertEqual(latest['종목코드'].tolist(), ['005930', '000660'])
+            self.assertEqual(latest['상태'].tolist(), ['성공', '실패'])
+            self.assertEqual(len(store.logs()), 3)
+
     def test_invalid_prices_rejected(self):
         frame = prices()
         frame.loc[0, 'Close'] = -1

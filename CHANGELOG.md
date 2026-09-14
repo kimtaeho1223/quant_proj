@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 - 2026-09-14
+
+- Show the most recent attempt per symbol separately from collection history.
+- Collapse the latest 500 historical attempts by default; preserve all stored logs.
+
 ## 0.1.0 - 2026-09-14
 
 - Streamlit Korean-stock multifactor demo with adjustable weights.

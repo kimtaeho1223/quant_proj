@@ -50,6 +50,24 @@ def render_market(path):
             successes = sum(r['status'] == '성공' for r in results)
             message = f'수집 완료: 성공 {successes}개, 실패 {len(results)-successes}개'
             (st.success if successes == len(results) else st.warning)(message)
+    st.subheader('최근 갱신 결과')
+    latest = store.latest_results()
+    if latest.empty:
+        st.info('아직 갱신 기록이 없습니다.')
+    else:
+        st.caption('종목별 마지막 시도 기준 · 종목 목록 갱신 포함')
+        failures = int((latest['상태'] == '실패').sum())
+        if failures:
+            st.warning(f'마지막 갱신이 실패한 항목 {failures}개')
+        else:
+            st.success('모든 항목의 마지막 갱신이 성공했습니다.')
+        st.dataframe(latest, hide_index=True)
+    with st.expander('과거 수집 기록 · 최근 500건', expanded=False):
+        logs = store.logs()
+        if logs.empty:
+            st.info('아직 수집 기록이 없습니다.')
+        else:
+            st.dataframe(logs, hide_index=True)
     summary = store.summary()
     st.subheader('저장된 일별 주가')
     if summary.empty:
@@ -61,7 +79,3 @@ def render_market(path):
         st.line_chart(data.set_index('Date')['Close'], color='#198573')
         st.caption('제공처 종가 기준입니다. 수정주가와 기업행사 반영은 백테스트 연결 전에 추가 검증합니다. 일별 거래대금은 이 자료에 포함되지 않습니다.')
         st.dataframe(data.rename(columns={'Date':'거래일', 'Open':'시가', 'High':'고가', 'Low':'저가', 'Close':'종가', 'Volume':'거래량'}), hide_index=True)
-    st.subheader('수집 기록')
-    logs = store.logs()
-    if not logs.empty:
-        st.dataframe(logs, hide_index=True)
