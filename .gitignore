@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+data/
+.venv/
+*.log
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.vscode/settings.json
+*.db
+*.db-wal
+*.db-shm

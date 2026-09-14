@@ -1,0 +1,23 @@
+# Changelog
+
+## 0.1.0 - 2026-09-14
+
+- Streamlit Korean-stock multifactor demo with adjustable weights.
+- Twenty-stock portfolio selection, rank-30 retention buffer, cash-aware orders.
+- Local holdings, proposed trades, and journal persistence.
+- Real-price collection page using FinanceDataReader, KRX listing snapshots,
+  NAVER daily prices, SQLite cache, and collection logs.
+- PowerShell launcher and VS Code Streamlit debug configuration.
+- Twelve automated tests covering core rules, persistence, collection and UI navigation.
+
+### Verification and limitations
+
+Real provider collection and local persistence succeeded for the stock listing and
+three symbols. A subsequent refresh from the running app returned connection errors.
+The app execution environment's network access remains to be diagnosed; the UI
+refresh path must not yet be considered verified end to end.
+Cached records survive refresh failure.
+
+Financial statement integration, live strategy ranking, scheduled refresh and
+backtesting remain future work. Market databases, holdings, secrets and logs are
+excluded from Git. NAVER daily data does not contain actual traded value.
