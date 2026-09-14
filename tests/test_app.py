@@ -9,17 +9,20 @@ class AppTests(unittest.TestCase):
     def test_settings_and_save(self):
         with tempfile.TemporaryDirectory() as folder:
             os.environ['QUANTDESK_DB'] = folder + '/app.db'
+            os.environ['QUANTDESK_MARKET_DB'] = folder + '/market.db'
+            os.environ['QUANTDESK_DART_DB'] = folder + '/dart.db'
             try:
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(len(app.tabs), 5)
-                os.environ['QUANTDESK_DART_DB'] = folder + '/dart.db'
+                app.radio(key='page').set_value('실제 멀티팩터 순위').run()
+                self.assertEqual(len(app.exception), 0)
+                self.assertTrue(any('실제 멀티팩터 순위' in item.value for item in app.subheader))
                 app.radio(key='page').set_value('재무정보').run()
                 self.assertEqual(len(app.exception), 0)
                 app.button(key='dart_companies').click().run()
                 self.assertTrue(any('40자리' in item.value for item in app.error))
                 self.assertEqual(len(app.exception), 0)
-                os.environ['QUANTDESK_MARKET_DB'] = folder + '/market.db'
                 app.radio(key='page').set_value('실제 주가 데이터').run()
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(app.button(key='refresh_prices').label, '선택 종목 주가 갱신')

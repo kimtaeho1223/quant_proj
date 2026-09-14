@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-09-14
+
+- Add a real multifactor research ranking for the top 100 KOSPI/KOSDAQ common-stock candidates by cached market capitalization.
+- Calculate 12-month momentum and annualized volatility from 252 saved trading days.
+- Integrate only matched, filing-date-valid annual DART metrics, preferring consolidated statements for the same year.
+- Show data-readiness exclusions instead of assigning ranks from incomplete or mismatched records.
+
 ## 0.2.1 - 2026-09-14
 
 - Match DART companies to the cached KRX listing by exact code and whitespace-normalized name.

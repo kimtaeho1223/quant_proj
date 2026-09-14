@@ -9,9 +9,17 @@ from quantdesk.data import sample_stocks, SAMPLE_DATE
 from quantdesk.storage import Store
 from quantdesk.market_ui import render_market
 from quantdesk.dart_ui import render_dart
+from quantdesk.real_ranking_ui import render_real_ranking
 
 st.set_page_config(page_title='Quant Desk KR', page_icon=':material/monitoring:', layout='wide')
-page = st.sidebar.radio('화면', ['샘플 전략', '실제 주가 데이터', '재무정보'], key='page')
+page = st.sidebar.radio('화면', ['샘플 전략', '실제 주가 데이터', '재무정보', '실제 멀티팩터 순위'], key='page')
+if page == '실제 멀티팩터 순위':
+    st.title('Quant Desk KR')
+    render_real_ranking(
+        os.environ.get('QUANTDESK_MARKET_DB', str(Path(__file__).parent / 'data' / 'market.db')),
+        os.environ.get('QUANTDESK_DART_DB', str(Path(__file__).parent / 'data' / 'dart.db')),
+    )
+    st.stop()
 if page == '재무정보':
     st.title('Quant Desk KR')
     render_dart(os.environ.get('QUANTDESK_DART_DB', str(Path(__file__).parent / 'data' / 'dart.db')))
