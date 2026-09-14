@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 - 2026-09-14
+
+- Match DART companies to the cached KRX listing by exact code and whitespace-normalized name.
+- Default financial collection to matched companies; unmatched historical records remain available.
+- Extract standard annual profit/equity accounts and calculate average-equity ROE.
+- Use parent-attributable accounts for consolidated statements; reject missing/ambiguous accounts.
+- Show annual earnings/market-cap snapshot ratios only for matched issuers as reference values, not ranks.
+
 ## 0.2.0 - 2026-09-14
 
 - Add OpenDART annual financial-statement collection and company lookup.

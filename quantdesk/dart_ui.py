@@ -2,6 +2,10 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from quantdesk.dart import DartClient, DartStore, DartError
+from quantdesk.market import MarketStore
+from quantdesk.financials import summarize_statement, match_company
+from pathlib import Path
+import os
 
 
 def render_dart(path):
@@ -13,6 +17,8 @@ def render_dart(path):
                         help='이 브라우저 세션에서만 사용하며 파일이나 GitHub에 저장하지 않습니다.')
     st.link_button('인증키 신청 / 관리', 'https://opendart.fss.or.kr/')
     companies = store.companies()
+    market_path = os.environ.get('QUANTDESK_MARKET_DB', str(Path(__file__).resolve().parents[1] / 'data' / 'market.db'))
+    listing, listing_fetched = MarketStore(market_path).listing()
     if st.button('기업 목록 갱신', icon=':material/refresh:', key='dart_companies'):
         try:
             with st.spinner('기업 목록을 가져오는 중입니다.'):
@@ -22,10 +28,17 @@ def render_dart(path):
         except DartError as exc:
             st.error(str(exc))
     if companies:
-        stock = st.selectbox('기업', sorted(companies), format_func=lambda c: f"{companies[c]['name']} ({c})")
+        matched = [c for c in companies if not match_company(c, companies, listing)]
+        include_unmatched = st.checkbox('대조되지 않은 기업도 표시', value=False)
+        options = sorted(companies) if include_unmatched else sorted(matched)
+        if not options:
+            st.warning('대조된 기업이 없습니다. 실제 주가 데이터에서 종목 목록을 갱신하거나 대조되지 않은 기업 표시를 선택해 주세요.')
+        stock = st.selectbox('기업', options, format_func=lambda c: f"{companies[c]['name']} ({c})")
+        if stock and match_company(stock, companies, listing):
+            st.warning(match_company(stock, companies, listing))
         year = st.number_input('사업연도', min_value=2015, max_value=datetime.now().year, value=datetime.now().year - 1, step=1)
         basis = st.radio('재무제표 기준', ['CFS', 'OFS'], format_func=lambda b: '연결' if b == 'CFS' else '별도', horizontal=True)
-        if st.button('연간 재무제표 수집', icon=':material/download:', type='primary'):
+        if st.button('연간 재무제표 수집', icon=':material/download:', type='primary', disabled=not stock):
             try:
                 with st.spinner('재무제표와 공시일을 확인하는 중입니다.'):
                     data = DartClient(key).annual(companies[stock]['corp_code'], year, basis)
@@ -37,6 +50,14 @@ def render_dart(path):
         st.caption('기업 목록: 아직 없음')
     st.subheader('저장된 재무제표')
     statements = store.statements()
+    if statements:
+        st.subheader('재무 지표 검증')
+        st.caption(f'종목 목록 수집: {listing_fetched or "없음"} · 거래 기준일은 별도 확인 필요')
+        metrics = pd.DataFrame([summarize_statement(e, companies, listing) for e in statements])
+        st.dataframe(metrics, hide_index=True)
+        with st.expander('계산 기준'):
+            st.write('ROE = 연간 순이익 ÷ 당기·전기 평균 자기자본. 연결은 지배기업 소유주 귀속 이익·자본, 별도는 순이익·자본총계를 사용합니다. 표준 계정이 없거나 금액이 충돌하면 계산하지 않습니다.')
+            st.write('가치 지표는 해당 연도 이익과 저장된 시가총액 스냅샷의 비율입니다. 서로 다른 사업연도·연결·별도 자료를 통합한 순위가 아니며, 아직 TTM·우선주·과거 시점 정합성을 반영하지 않은 참고값입니다.')
     if not statements:
         st.info('저장된 재무제표가 없습니다.')
     for entry in statements:
