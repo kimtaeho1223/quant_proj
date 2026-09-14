@@ -47,4 +47,4 @@
 
 - [x] Document definitions, data sufficiency requirements and current-view limitation.
 - [x] Run `python -m unittest discover -s tests -v` and `git diff --check`.
-- [ ] Commit and push the verified feature.
+- [x] Commit and push the verified feature.
