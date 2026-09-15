@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import pandas as pd
-from quantdesk.market import MarketStore, normalize_prices, refresh_prices
+from quantdesk.market import MarketStore, normalize_prices, refresh_prices, refresh_top_prices
 
 
 def prices():
@@ -48,3 +48,25 @@ class MarketTests(unittest.TestCase):
     def test_empty_data_not_success(self):
         with self.assertRaises(ValueError):
             normalize_prices(prices().iloc[:0], '2026-09-11')
+
+    def test_top_price_refresh_uses_rank_candidates_and_continues_after_failure(self):
+        listing = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
+            dict(Code='000002', Name='알파우', Market='KOSPI', Marcap=400, Amount=40),
+            dict(Code='000003', Name='베타', Market='KOSDAQ', Marcap=200, Amount=20),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+            calls = []
+
+            def provider(code, *_):
+                calls.append(code)
+                if code == '000001':
+                    raise ValueError('upstream unavailable')
+                return prices()
+
+            result = refresh_top_prices(store, listing, '2026-09-01', '2026-09-11', provider=provider)
+
+            self.assertEqual(calls, ['000001', '000003'])
+            self.assertEqual([entry['status'] for entry in result], ['실패', '성공'])
+            self.assertEqual(len(store.prices('000003')), 2)

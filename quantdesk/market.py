@@ -123,3 +123,12 @@ def refresh_prices(store, codes, start, end, provider=None, progress=None):
         if progress:
             progress((index + 1) / len(codes))
     return results
+
+
+def refresh_top_prices(store, listing, start, end, provider=None, progress=None):
+    """Refresh daily prices for the same top-100 universe used by the ranker."""
+    from quantdesk.real_ranking import candidate_universe
+    candidates = candidate_universe(listing)
+    if candidates.empty:
+        raise ValueError('상위 100개 후보 종목을 만들 수 없습니다. 종목 목록을 먼저 갱신해 주세요.')
+    return refresh_prices(store, candidates.Code.tolist(), start, end, provider=provider, progress=progress)

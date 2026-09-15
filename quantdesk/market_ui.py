@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import streamlit as st
-from quantdesk.market import MarketStore, refresh_listing, refresh_prices
+from quantdesk.market import MarketStore, refresh_listing, refresh_prices, refresh_top_prices
 
 
 def render_market(path):
@@ -49,6 +49,16 @@ def render_market(path):
             results = refresh_prices(store, codes, first.isoformat(), last.isoformat(), progress=progress.progress)
             successes = sum(r['status'] == '성공' for r in results)
             message = f'수집 완료: 성공 {successes}개, 실패 {len(results)-successes}개'
+            (st.success if successes == len(results) else st.warning)(message)
+    if not listing.empty:
+        st.divider()
+        st.caption('상위 100개 보통주 후보를 선택 목록과 관계없이 수집합니다. 제공처 응답에 따라 몇 분 걸릴 수 있습니다.')
+        if st.button('상위 100개 주가 일괄 수집', icon=':material/download:', key='refresh_top_prices'):
+            progress = st.progress(0)
+            with st.spinner('상위 100개 후보의 일별 주가를 수집하는 중입니다.'):
+                results = refresh_top_prices(store, listing, first.isoformat(), last.isoformat(), progress=progress.progress)
+            successes = sum(r['status'] == '성공' for r in results)
+            message = f'상위 후보 수집 완료: 성공 {successes}개, 실패 {len(results)-successes}개'
             (st.success if successes == len(results) else st.warning)(message)
     st.subheader('최근 갱신 결과')
     latest = store.latest_results()
