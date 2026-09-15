@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - 2026-09-15
+
+- Add a one-click daily-price refresh for the same top-100 common-stock universe used by the real ranking.
+- Preserve per-symbol success or failure logs while continuing the batch after individual provider failures.
+
 ## 0.3.0 - 2026-09-14
 
 - Add a real multifactor research ranking for the top 100 KOSPI/KOSDAQ common-stock candidates by cached market capitalization.

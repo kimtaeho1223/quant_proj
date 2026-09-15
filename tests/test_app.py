@@ -2,7 +2,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import pandas as pd
 from streamlit.testing.v1 import AppTest
+from quantdesk.market import MarketStore
 
 
 class AppTests(unittest.TestCase):
@@ -12,6 +14,9 @@ class AppTests(unittest.TestCase):
             os.environ['QUANTDESK_MARKET_DB'] = folder + '/market.db'
             os.environ['QUANTDESK_DART_DB'] = folder + '/dart.db'
             try:
+                MarketStore(os.environ['QUANTDESK_MARKET_DB']).save_listing(pd.DataFrame([
+                    dict(Code='005930', Name='삼성전자', Market='KOSPI', Marcap=1_000, Amount=100),
+                ]))
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(len(app.tabs), 5)
@@ -26,6 +31,7 @@ class AppTests(unittest.TestCase):
                 app.radio(key='page').set_value('실제 주가 데이터').run()
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(app.button(key='refresh_prices').label, '선택 종목 주가 갱신')
+                self.assertEqual(app.button(key='refresh_top_prices').label, '상위 100개 주가 일괄 수집')
                 app.radio(key='page').set_value('샘플 전략').run()
                 app.button(key='save_decision').click().run()
                 self.assertEqual(len(app.exception), 0)
