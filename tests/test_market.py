@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import date
 import pandas as pd
 from quantdesk.market import MarketStore, normalize_prices, refresh_prices, refresh_top_prices
+from quantdesk.market_worker import read_listing
 
 
 def prices():
@@ -70,3 +72,32 @@ class MarketTests(unittest.TestCase):
             self.assertEqual(calls, ['000001', '000003'])
             self.assertEqual([entry['status'] for entry in result], ['실패', '성공'])
             self.assertEqual(len(store.prices('000003')), 2)
+
+    def test_listing_rejects_empty_market_values_and_preserves_previous_snapshot(self):
+        valid = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
+        ])
+        broken = valid.assign(Marcap=float('nan'), Amount=float('nan'))
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+            store.save_listing(valid)
+            with self.assertRaisesRegex(ValueError, '시가총액'):
+                store.save_listing(broken)
+            saved, _ = store.listing()
+            self.assertEqual(saved.Marcap.tolist(), [300])
+
+    def test_worker_uses_recent_complete_cache_when_latest_listing_is_blank(self):
+        blank = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=None, Amount=None),
+        ])
+        complete = blank.assign(Marcap=300, Amount=30)
+        requested = []
+
+        def read_cache(url, **_):
+            requested.append(url)
+            return complete if url.endswith('/2026-09-11.csv') else blank
+
+        result = read_listing(lambda _: blank, read_cache=read_cache, today=date(2026, 9, 15))
+
+        self.assertEqual(result.Marcap.tolist(), [300])
+        self.assertTrue(requested[-1].endswith('/2026-09-11.csv'))

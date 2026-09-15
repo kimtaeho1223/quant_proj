@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 - 2026-09-15
+
+- Reject incomplete KRX listing snapshots so blank market values cannot replace a usable saved universe.
+- Fall back to the most recent complete FinanceDataReader KRX cache when the latest listing cache has empty market values.
+
 ## 0.3.1 - 2026-09-15
 
 - Add a one-click daily-price refresh for the same top-100 common-stock universe used by the real ranking.

@@ -10,6 +10,15 @@ import pandas as pd
 from quantdesk.storage import Store
 
 
+def market_values_complete(frame):
+    required = {'Marcap', 'Amount'}
+    if not required.issubset(frame.columns) or frame.empty:
+        return False
+    values = frame[['Marcap', 'Amount']].apply(pd.to_numeric, errors='coerce')
+    valid = values.Marcap.gt(0) & values.Amount.gt(0)
+    return int(valid.sum()) >= max(1, int(len(frame) * 0.95))
+
+
 def provider_read(kind, *args):
     try:
         process = subprocess.run([sys.executable, '-m', 'quantdesk.market_worker', kind, *args],
@@ -72,8 +81,11 @@ class MarketStore(Store):
             raise ValueError('종목 목록에 필수 항목이 없습니다. 이전 목록을 유지합니다.')
         frame = frame[frame.Market.isin(['KOSPI', 'KOSDAQ'])].copy()
         frame['Code'] = frame.Code.astype(str).str.zfill(6)
+        frame[['Marcap', 'Amount']] = frame[['Marcap', 'Amount']].apply(pd.to_numeric, errors='coerce')
         if frame.empty or not frame.Code.str.fullmatch(r'[0-9A-Z]{6}').all() or frame.Code.duplicated().any():
             raise ValueError('종목 목록의 코드가 유효하지 않습니다.')
+        if not market_values_complete(frame):
+            raise ValueError('시가총액 또는 거래대금 데이터가 충분하지 않습니다. 이전 목록을 유지합니다.')
         now = datetime.now(ZoneInfo('Asia/Seoul')).isoformat(timespec='seconds')
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO market_listing VALUES(1,?,?)', (frame.to_json(orient='table'), now))
