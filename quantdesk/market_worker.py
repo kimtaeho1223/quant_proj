@@ -8,7 +8,10 @@ from quantdesk.market import market_values_complete
 
 
 def read_listing(stock_listing, read_cache=pd.read_csv, today=None):
-    frame = stock_listing('KRX')
+    try:
+        frame = stock_listing('KRX')
+    except (OSError, ValueError, ConnectionError):
+        frame = pd.DataFrame()
     if market_values_complete(frame):
         return frame
     today = today or date.today()

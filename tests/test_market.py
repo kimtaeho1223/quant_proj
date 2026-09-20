@@ -101,3 +101,21 @@ class MarketTests(unittest.TestCase):
 
         self.assertEqual(result.Marcap.tolist(), [300])
         self.assertTrue(requested[-1].endswith('/2026-09-11.csv'))
+
+    def test_worker_uses_recent_complete_cache_when_listing_provider_raises(self):
+        complete = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
+        ])
+        requested = []
+
+        def unavailable(_):
+            raise ConnectionError('KRX unavailable')
+
+        def read_cache(url, **_):
+            requested.append(url)
+            return complete
+
+        result = read_listing(unavailable, read_cache=read_cache, today=date(2026, 9, 15))
+
+        self.assertEqual(result.Marcap.tolist(), [300])
+        self.assertTrue(requested[0].endswith('/2026-09-14.csv'))
