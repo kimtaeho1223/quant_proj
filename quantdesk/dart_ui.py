@@ -1,9 +1,10 @@
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-from quantdesk.dart import DartClient, DartStore, DartError
+from quantdesk.dart import DartClient, DartStore, DartError, refresh_top_statements
 from quantdesk.market import MarketStore
 from quantdesk.financials import summarize_statement, match_company
+from quantdesk.real_ranking import candidate_universe
 from pathlib import Path
 import os
 
@@ -12,7 +13,7 @@ def render_dart(path):
     store = DartStore(path)
     st.subheader('재무정보 · OpenDART')
     st.caption('연간 사업보고서 · 연결·별도 구분 · 공시 접수일 확인')
-    st.info('재무자료 수집 단계입니다. 실제 팩터 점수와 백테스트에는 아직 반영되지 않습니다.')
+    st.info('저장된 재무자료는 실제 멀티팩터 순위의 가치·퀄리티 팩터에 사용됩니다. 백테스트에는 아직 반영되지 않습니다.')
     key = st.text_input('OpenDART 인증키', type='password', key='dart_api_key',
                         help='이 브라우저 세션에서만 사용하며 파일이나 GitHub에 저장하지 않습니다.')
     st.link_button('인증키 신청 / 관리', 'https://opendart.fss.or.kr/')
@@ -46,8 +47,28 @@ def render_dart(path):
                 st.success(f"저장 완료 · 공시일 {data['filed_at']}")
             except DartError as exc:
                 st.error(str(exc))
+        candidates = candidate_universe(listing)
+        st.divider()
+        st.caption(f'실제 멀티팩터 순위와 같은 시가총액 상위 후보 {len(candidates)}개를 수집합니다. 연결 재무제표를 우선하고, 자료가 없는 기업만 별도로 대체합니다.')
+        if st.button('상위 100개 재무제표 일괄 수집', icon=':material/download:',
+                     key='refresh_top_statements', disabled=candidates.empty):
+            try:
+                client = DartClient(key)
+                progress = st.progress(0)
+                with st.spinner('상위 후보의 연간 재무제표와 공시일을 확인하는 중입니다.'):
+                    results = refresh_top_statements(store, listing, companies, year, client,
+                                                     progress=progress.progress)
+                successes = sum(result['status'] == '성공' for result in results)
+                message = f'일괄 수집 완료: 성공 {successes}개, 실패 {len(results) - successes}개'
+                (st.success if successes == len(results) else st.warning)(message)
+            except DartError as exc:
+                st.error(str(exc))
     else:
         st.caption('기업 목록: 아직 없음')
+    latest = store.latest_results()
+    if latest:
+        st.subheader('최근 일괄 수집 결과')
+        st.dataframe(pd.DataFrame(latest), hide_index=True)
     st.subheader('저장된 재무제표')
     statements = store.statements()
     if statements:
