@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4 - 2026-09-20
+
+- Add incremental annual-statement collection that skips symbols already saved for the selected year.
+- Add an explicit full-refresh mode and show saved and pending candidate counts before collection.
+- Accept official KRX/OpenDART name variants when the stock code and DART corporation number are valid.
+- Recover a filing date from a valid receipt number when the filing-list lookup omits that receipt.
+
 ## 0.3.3 - 2026-09-20
 
 - Add one-click annual-statement collection for the real ranking's top-100 common-stock universe.
