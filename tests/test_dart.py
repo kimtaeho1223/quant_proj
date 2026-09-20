@@ -29,10 +29,9 @@ class DartTests(unittest.TestCase):
         with self.assertRaises(DartNoDataError):
             DartClient('a' * 40, session).request('fnlttSinglAcntAll.json', {})
 
-    def test_statement_requires_matching_receipt(self):
+    def test_statement_uses_receipt_date_when_filing_lookup_is_empty(self):
         rows = [dict(rcept_no='20260316000001', account_nm='자본총계')]
-        with self.assertRaises(DartError):
-            validate_statement(rows, [])
+        self.assertEqual(validate_statement(rows, [])['filed_at'], '2026-03-16')
         result = validate_statement(rows, [dict(rcept_no='20260316000001', rcept_dt='20260316', report_nm='사업보고서')])
         self.assertEqual(result['filed_at'], '2026-03-16')
 
@@ -105,13 +104,12 @@ class DartTests(unittest.TestCase):
             self.assertEqual(results[0]['status'], '실패')
             self.assertEqual(results[0]['message'], '요청 한도를 초과했습니다.')
 
-    def test_top_statement_batch_continues_after_company_mismatch(self):
+    def test_top_statement_batch_continues_after_missing_dart_company(self):
         listing = pd.DataFrame([
             dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
             dict(Code='000002', Name='베타', Market='KOSDAQ', Marcap=200, Amount=20),
         ])
         companies = {
-            '000001': {'corp_code': '00000001', 'name': '다른알파'},
             '000002': {'corp_code': '00000002', 'name': '베타'},
         }
 
@@ -125,3 +123,52 @@ class DartTests(unittest.TestCase):
 
             self.assertEqual([result['status'] for result in results], ['실패', '성공'])
             self.assertEqual([entry['stock'] for entry in store.statements()], ['000002'])
+
+    def test_top_statement_batch_skips_saved_symbols_by_default(self):
+        listing = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
+            dict(Code='000002', Name='베타', Market='KOSPI', Marcap=200, Amount=20),
+        ])
+        companies = {
+            '000001': {'corp_code': '00000001', 'name': '알파'},
+            '000002': {'corp_code': '00000002', 'name': '베타'},
+        }
+        calls = []
+
+        class Client:
+            def annual(self, corp, year, basis):
+                calls.append(corp)
+                return dict(receipt='20260316000002', filed_at='2026-03-16', rows=[])
+
+        with tempfile.TemporaryDirectory() as folder:
+            store = DartStore(Path(folder) / 'dart.db')
+            store.save_statement('000001', 2025, 'CFS', dict(
+                receipt='20260316000001', filed_at='2026-03-16', rows=[]))
+
+            results = refresh_top_statements(store, listing, companies, 2025, Client())
+
+            self.assertEqual(calls, ['00000002'])
+            self.assertEqual([result['status'] for result in results], ['건너뜀', '성공'])
+            self.assertEqual(store.coverage(2025), {'000001': 'CFS', '000002': 'CFS'})
+
+    def test_top_statement_batch_force_refreshes_saved_symbols(self):
+        listing = pd.DataFrame([
+            dict(Code='000001', Name='알파', Market='KOSPI', Marcap=300, Amount=30),
+        ])
+        companies = {'000001': {'corp_code': '00000001', 'name': '알파'}}
+        calls = []
+
+        class Client:
+            def annual(self, corp, year, basis):
+                calls.append(corp)
+                return dict(receipt='20260401000001', filed_at='2026-04-01', rows=[])
+
+        with tempfile.TemporaryDirectory() as folder:
+            store = DartStore(Path(folder) / 'dart.db')
+            store.save_statement('000001', 2025, 'OFS', dict(
+                receipt='20260316000001', filed_at='2026-03-16', rows=[]))
+
+            results = refresh_top_statements(store, listing, companies, 2025, Client(), force=True)
+
+            self.assertEqual(calls, ['00000001'])
+            self.assertEqual(results[0]['status'], '성공')

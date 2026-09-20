@@ -47,7 +47,7 @@ class RealRankingTests(unittest.TestCase):
 
     def test_build_ranking_explains_missing_financials(self):
         table, excluded = build_ranking(listing(), {'000001':prices(), '000003':prices()}, [statement()],
-            {'000001':{'name':'알파'}}, '2025-12-31')
+            {'000001':{'corp_code':'00000001', 'name':'알파'}}, '2025-12-31')
         self.assertEqual(table.code.tolist(), ['000001'])
         self.assertIn('공시일이 지난 재무제표 없음', excluded.loc[excluded.Code == '000003', '제외 사유'].iloc[0])
 

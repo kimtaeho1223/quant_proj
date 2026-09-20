@@ -1,6 +1,7 @@
 """Conservative annual-account extraction; no fuzzy issuer matching."""
 from decimal import Decimal, InvalidOperation
 import math
+import re
 
 
 def amount(value):
@@ -49,9 +50,8 @@ def match_company(stock, companies, listing):
     company = companies.get(stock)
     if not company:
         return 'DART 기업 목록에 없음'
-    normalize = lambda value: ''.join(str(value).split())
-    if normalize(company['name']) != normalize(found.iloc[0].Name):
-        return '기업명 불일치 · 수동 확인 필요'
+    if not re.fullmatch(r'\d{8}', str(company.get('corp_code', ''))):
+        return 'DART 법인번호 누락 또는 비정상'
     return ''
 
 
@@ -60,7 +60,7 @@ def summarize_statement(entry, companies, listing):
     mismatch = match_company(stock, companies, listing)
     result = {'종목코드':stock, '기업명':companies.get(stock, {}).get('name', stock),
               '사업연도':entry['year'], '기준':'연결' if entry['basis'] == 'CFS' else '별도',
-              '공시일':entry['filed_at'], '기업 대조':mismatch or '코드·기업명 일치',
+              '공시일':entry['filed_at'], '기업 대조':mismatch or '종목코드·법인번호 확인',
               '순이익 (원)':None, '당기 자기자본 (원)':None, '전기 자기자본 (원)':None,
               'ROE (%)':None, '연간 이익 / 시가총액 (%)':None, '계정 검증':'', '가치 지표 상태':mismatch or '계정 확인 필요'}
     try:

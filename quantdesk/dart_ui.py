@@ -48,8 +48,14 @@ def render_dart(path):
             except DartError as exc:
                 st.error(str(exc))
         candidates = candidate_universe(listing)
+        coverage = store.coverage(year)
+        saved_count = sum(code in coverage for code in candidates.Code)
+        mode = st.radio('수집 방식', ['부족한 종목만', '전체 재확인'], horizontal=True,
+                        key='financial_refresh_mode')
+        pending_count = len(candidates) - saved_count if mode == '부족한 종목만' else len(candidates)
         st.divider()
         st.caption(f'실제 멀티팩터 순위와 같은 시가총액 상위 후보 {len(candidates)}개를 수집합니다. 연결 재무제표를 우선하고, 자료가 없는 기업만 별도로 대체합니다.')
+        st.caption(f'저장 완료 {saved_count}개 · 수집 예정 {pending_count}개')
         if st.button('상위 100개 재무제표 일괄 수집', icon=':material/download:',
                      key='refresh_top_statements', disabled=candidates.empty):
             try:
@@ -57,10 +63,13 @@ def render_dart(path):
                 progress = st.progress(0)
                 with st.spinner('상위 후보의 연간 재무제표와 공시일을 확인하는 중입니다.'):
                     results = refresh_top_statements(store, listing, companies, year, client,
-                                                     progress=progress.progress)
+                                                     progress=progress.progress,
+                                                     force=mode == '전체 재확인')
                 successes = sum(result['status'] == '성공' for result in results)
-                message = f'일괄 수집 완료: 성공 {successes}개, 실패 {len(results) - successes}개'
-                (st.success if successes == len(results) else st.warning)(message)
+                skipped = sum(result['status'] == '건너뜀' for result in results)
+                failures = len(results) - successes - skipped
+                message = f'일괄 수집 완료: 성공 {successes}개, 실패 {failures}개, 건너뜀 {skipped}개'
+                (st.success if failures == 0 else st.warning)(message)
             except DartError as exc:
                 st.error(str(exc))
     else:

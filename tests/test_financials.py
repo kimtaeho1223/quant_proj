@@ -33,9 +33,10 @@ class FinancialTests(unittest.TestCase):
         listing = pd.DataFrame([dict(Code='055550', Name='신한지주', Marcap=100000)])
         self.assertNotEqual(match_company('000010', {'000010': {'name':'신한은행'}}, listing), '')
 
-    def test_name_mismatch_blocks(self):
-        listing = pd.DataFrame([dict(Code='005930', Name='다른회사', Marcap=100000)])
-        self.assertNotEqual(match_company('005930', {'005930': {'name':'삼성전자'}}, listing), '')
+    def test_exact_stock_code_allows_official_name_variants(self):
+        listing = pd.DataFrame([dict(Code='005380', Name='현대차', Marcap=100000)])
+        companies = {'005380': {'corp_code': '00164742', 'name': '현대자동차'}}
+        self.assertEqual(match_company('005380', companies, listing), '')
 
     def test_value_ratio_only_when_company_matches(self):
         entry = dict(stock='000010', year=2025, basis='OFS', filed_at='2026-03-01', rows=rows())

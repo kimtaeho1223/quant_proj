@@ -55,7 +55,7 @@ def build_ranking(listing, prices_by_code, statements, companies, as_of, weights
             if statement is None:
                 raise ValueError('공시일이 지난 재무제표 없음')
             financial = summarize_statement(statement, companies, listing)
-            if financial['기업 대조'] != '코드·기업명 일치':
+            if financial['기업 대조'] != '종목코드·법인번호 확인':
                 raise ValueError(financial['기업 대조'])
             if financial['ROE (%)'] is None or financial['연간 이익 / 시가총액 (%)'] is None:
                 raise ValueError(financial['계정 검증'] or financial['가치 지표 상태'])

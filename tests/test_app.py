@@ -30,6 +30,8 @@ class AppTests(unittest.TestCase):
                 app.radio(key='page').set_value('재무정보').run()
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(app.button(key='refresh_top_statements').label, '상위 100개 재무제표 일괄 수집')
+                self.assertEqual(app.radio(key='financial_refresh_mode').value, '부족한 종목만')
+                self.assertTrue(any('수집 예정 1' in item.value for item in app.caption))
                 app.button(key='refresh_top_statements').click().run()
                 self.assertTrue(any('40자리' in item.value for item in app.error))
                 app.button(key='dart_companies').click().run()

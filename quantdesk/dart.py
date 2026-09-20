@@ -93,14 +93,13 @@ class DartClient:
 
 def validate_statement(rows, filings):
     receipts = {row.get('rcept_no') for row in rows}
-    if len(receipts) != 1:
+    if len(receipts) != 1 or not re.fullmatch(r'\d{14}', str(next(iter(receipts), ''))):
         raise DartError('재무제표 접수번호가 일치하지 않습니다.')
     receipt = next(iter(receipts))
     matches = [f for f in filings if f.get('rcept_no') == receipt]
-    if len(matches) != 1:
-        raise DartError('공시일을 확인하지 못해 저장하지 않았습니다.')
     try:
-        date = datetime.strptime(matches[0]['rcept_dt'], '%Y%m%d').date().isoformat()
+        receipt_day = matches[0]['rcept_dt'] if len(matches) == 1 else receipt[:8]
+        date = datetime.strptime(receipt_day, '%Y%m%d').date().isoformat()
     except (ValueError, KeyError):
         raise DartError('공시 접수일이 올바르지 않습니다.') from None
     return dict(receipt=receipt, filed_at=date, rows=rows)
@@ -133,6 +132,13 @@ class DartStore(Store):
             rows = db.execute('SELECT stock,year,basis,receipt,filed_at,fetched,payload FROM dart_statements ORDER BY fetched DESC').fetchall()
         return [dict(stock=r[0], year=r[1], basis=r[2], receipt=r[3], filed_at=r[4], fetched=r[5], rows=json.loads(r[6])) for r in rows]
 
+    def coverage(self, year):
+        with self.connect() as db:
+            rows = db.execute('''SELECT stock,
+                CASE WHEN SUM(CASE WHEN basis='CFS' THEN 1 ELSE 0 END) > 0 THEN 'CFS' ELSE 'OFS' END
+                FROM dart_statements WHERE year=? GROUP BY stock''', (year,)).fetchall()
+        return dict(rows)
+
     def record(self, stock, year, status, basis, message):
         with self.connect() as db:
             db.execute('INSERT INTO dart_logs(stock,year,status,basis,message,fetched) VALUES(?,?,?,?,?,?)',
@@ -145,13 +151,20 @@ class DartStore(Store):
         return [dict(종목코드=r[0], 사업연도=r[1], 상태=r[2], 기준=r[3] or '', 내용=r[4], 수집시각=r[5]) for r in rows]
 
 
-def refresh_top_statements(store, listing, companies, year, client, progress=None):
+def refresh_top_statements(store, listing, companies, year, client, progress=None, force=False):
     from quantdesk.financials import match_company
     from quantdesk.real_ranking import candidate_universe
 
     candidates = candidate_universe(listing)
+    coverage = store.coverage(year)
     results = []
     for index, row in enumerate(candidates.itertuples(index=False)):
+        if not force and row.Code in coverage:
+            results.append(dict(stock=row.Code, name=row.Name, status='건너뜀',
+                                basis=coverage[row.Code], message='저장된 재무제표 있음'))
+            if progress:
+                progress((index + 1) / len(candidates))
+            continue
         basis = ''
         try:
             mismatch = match_company(row.Code, companies, listing)
