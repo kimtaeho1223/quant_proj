@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 - 2026-09-20
+
+- Add one-click annual-statement collection for the real ranking's top-100 common-stock universe.
+- Prefer consolidated statements and fall back to separate statements only when OpenDART reports no data.
+- Persist per-symbol batch results and continue after individual issuer failures.
+
 ## 0.3.2 - 2026-09-15
 
 - Reject incomplete KRX listing snapshots so blank market values cannot replace a usable saved universe.

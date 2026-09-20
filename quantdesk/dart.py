@@ -13,6 +13,10 @@ class DartError(ValueError):
     pass
 
 
+class DartNoDataError(DartError):
+    pass
+
+
 ERRORS = {'010':'등록되지 않은 인증키입니다.', '011':'사용할 수 없는 인증키입니다.',
           '012':'허용되지 않은 IP입니다.', '013':'조회된 자료가 없습니다.',
           '020':'요청 한도를 초과했습니다.', '800':'OpenDART 점검 중입니다.'}
@@ -41,7 +45,8 @@ class DartClient:
         if not isinstance(payload, dict):
             raise DartError('OpenDART 응답 형식이 올바르지 않습니다.')
         if payload.get('status') != '000':
-            raise DartError(ERRORS.get(payload.get('status'), 'OpenDART 요청을 처리할 수 없습니다.'))
+            error = DartNoDataError if payload.get('status') == '013' else DartError
+            raise error(ERRORS.get(payload.get('status'), 'OpenDART 요청을 처리할 수 없습니다.'))
         return payload
 
     def companies(self):
@@ -107,6 +112,7 @@ class DartStore(Store):
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS dart_companies (id INTEGER PRIMARY KEY, payload TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS dart_statements (stock TEXT, year INTEGER, basis TEXT, receipt TEXT, filed_at TEXT, fetched TEXT, payload TEXT, PRIMARY KEY(stock,year,basis,receipt))')
+            db.execute('CREATE TABLE IF NOT EXISTS dart_logs (id INTEGER PRIMARY KEY, stock TEXT, year INTEGER, status TEXT, basis TEXT, message TEXT, fetched TEXT)')
 
     def companies(self):
         with self.connect() as db:
@@ -126,3 +132,46 @@ class DartStore(Store):
         with self.connect() as db:
             rows = db.execute('SELECT stock,year,basis,receipt,filed_at,fetched,payload FROM dart_statements ORDER BY fetched DESC').fetchall()
         return [dict(stock=r[0], year=r[1], basis=r[2], receipt=r[3], filed_at=r[4], fetched=r[5], rows=json.loads(r[6])) for r in rows]
+
+    def record(self, stock, year, status, basis, message):
+        with self.connect() as db:
+            db.execute('INSERT INTO dart_logs(stock,year,status,basis,message,fetched) VALUES(?,?,?,?,?,?)',
+                (stock, year, status, basis, message, datetime.now().astimezone().isoformat()))
+
+    def latest_results(self):
+        with self.connect() as db:
+            rows = db.execute('''SELECT stock,year,status,basis,message,fetched FROM dart_logs
+                WHERE id IN (SELECT MAX(id) FROM dart_logs GROUP BY stock,year) ORDER BY id DESC''').fetchall()
+        return [dict(종목코드=r[0], 사업연도=r[1], 상태=r[2], 기준=r[3] or '', 내용=r[4], 수집시각=r[5]) for r in rows]
+
+
+def refresh_top_statements(store, listing, companies, year, client, progress=None):
+    from quantdesk.financials import match_company
+    from quantdesk.real_ranking import candidate_universe
+
+    candidates = candidate_universe(listing)
+    results = []
+    for index, row in enumerate(candidates.itertuples(index=False)):
+        basis = ''
+        try:
+            mismatch = match_company(row.Code, companies, listing)
+            if mismatch:
+                raise DartError(mismatch)
+            company = companies[row.Code]
+            basis = 'CFS'
+            try:
+                data = client.annual(company['corp_code'], year, basis)
+            except DartNoDataError:
+                basis = 'OFS'
+                data = client.annual(company['corp_code'], year, basis)
+            store.save_statement(row.Code, year, basis, data)
+            status = '성공'
+            message = ('연결' if basis == 'CFS' else '별도') + ' 재무제표 저장'
+        except DartError as exc:
+            status = '실패'
+            message = str(exc)
+        store.record(row.Code, year, status, basis, message)
+        results.append(dict(stock=row.Code, name=row.Name, status=status, basis=basis, message=message))
+        if progress:
+            progress((index + 1) / len(candidates))
+    return results
