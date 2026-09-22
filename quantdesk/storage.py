@@ -26,7 +26,7 @@ class Store:
         with self.connect() as db:
             row = db.execute('SELECT payload FROM account WHERE id=1').fetchone()
         if not row:
-            return {}, 20_000_000
+            return {}, 10_000_000
         data = json.loads(row[0])
         return data['holdings'], data['cash']
 

@@ -43,6 +43,26 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(all(o['quantity'] == int(o['quantity']) and o['amount'] >= 100000 for o in result['orders']))
         self.assertLessEqual(sum(o['amount'] + o['cost'] for o in result['orders']), 20_000_000)
 
+    def test_rebalance_reports_target_positions_and_turnover(self):
+        ranked = score_stocks(universe(), DEFAULT_WEIGHTS)
+        result = rebalance(ranked, {}, 10_000_000, prices=universe().set_index('code').price.to_dict())
+
+        self.assertEqual(len(result['target_positions']), 20)
+        self.assertTrue(all(position['target_weight'] == 5.0 for position in result['target_positions']))
+        self.assertTrue(all(position['quantity'] == 49 for position in result['target_positions']))
+        self.assertAlmostEqual(result['invested_after'], 9_800_000)
+        self.assertAlmostEqual(result['turnover'], 98.0)
+        self.assertAlmostEqual(sum(position['actual_weight'] for position in result['target_positions']), 98.0)
+
+    def test_rebalance_reports_targets_that_cannot_buy_one_share(self):
+        data = universe()
+        data.loc[0, 'price'] = 600_000
+        ranked = score_stocks(data, DEFAULT_WEIGHTS)
+        result = rebalance(ranked, {}, 10_000_000, prices=data.set_index('code').price.to_dict())
+
+        self.assertEqual(result['unfunded_targets'], ['000000'])
+        self.assertEqual(result['target_positions'][0]['quantity'], 0)
+
     def test_missing_price_blocks(self):
         with self.assertRaises(ValueError):
             rebalance(score_stocks(universe(), DEFAULT_WEIGHTS), {'missing': 1}, 0, prices={})

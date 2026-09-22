@@ -27,6 +27,7 @@ class AppTests(unittest.TestCase):
                 app.radio(key='page').set_value('실제 멀티팩터 순위').run()
                 self.assertEqual(len(app.exception), 0)
                 self.assertTrue(any('실제 멀티팩터 순위' in item.value for item in app.subheader))
+                self.assertEqual([tab.label for tab in app.tabs], ['멀티팩터 순위', '주간 포트폴리오', '매매 제안'])
                 app.radio(key='page').set_value('재무정보').run()
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(app.button(key='refresh_top_statements').label, '상위 100개 재무제표 일괄 수집')
