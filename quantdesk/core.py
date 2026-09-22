@@ -54,5 +54,21 @@ def rebalance(ranked, holdings, cash, prices, min_trade=100_000, fee_rate=0.003)
             available += amount - cost if selling else -amount - cost
             remaining[code] = remaining.get(code, 0) + (-quantity if selling else quantity)
             orders.append(dict(code=code, name=names.get(code, code), side='매도' if selling else '매수', quantity=int(quantity), price=prices[code], amount=amount, cost=cost))
-    return dict(targets=targets, orders=orders, skipped=skipped, cash_after=max(0, available), equity=equity,
-                holdings_after={c: q for c, q in remaining.items() if q > 0})
+    holdings_after = {c: q for c, q in remaining.items() if q > 0}
+    invested_after = sum(prices[c] * q for c, q in holdings_after.items())
+    ranked_by_code = ranked.set_index('code')
+    target_positions = []
+    for code in targets:
+        row = ranked_by_code.loc[code]
+        amount = prices[code] * holdings_after.get(code, 0)
+        target_positions.append(dict(
+            rank=int(row['rank']), code=code, name=str(row['name']), sector=str(row.get('sector', '')),
+            price=float(prices[code]), target_weight=5.0, quantity=holdings_after.get(code, 0),
+            amount=float(amount), actual_weight=float(amount / equity * 100 if equity else 0),
+        ))
+    turnover = sum(order['amount'] for order in orders) / equity * 100 if equity else 0
+    unfunded_targets = [code for code in targets if desired[code] == 0]
+    return dict(targets=targets, unfunded_targets=unfunded_targets, target_positions=target_positions,
+                orders=orders, skipped=skipped,
+                cash_after=max(0, available), equity=equity, invested_after=invested_after, turnover=turnover,
+                holdings_after=holdings_after)

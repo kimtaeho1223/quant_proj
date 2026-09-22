@@ -18,6 +18,7 @@ if page == '실제 멀티팩터 순위':
     render_real_ranking(
         os.environ.get('QUANTDESK_MARKET_DB', str(Path(__file__).parent / 'data' / 'market.db')),
         os.environ.get('QUANTDESK_DART_DB', str(Path(__file__).parent / 'data' / 'dart.db')),
+        os.environ.get('QUANTDESK_PORTFOLIO_DB', str(Path(__file__).parent / 'data' / 'portfolio.db')),
     )
     st.stop()
 if page == '재무정보':
