@@ -172,3 +172,22 @@ class BacktestDataset:
         }
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
         return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def rank_week(dataset, signal_date, minimum_ready=80):
+    if minimum_ready < 1 or minimum_ready > 100:
+        raise BacktestDataError('최소 유효 후보 수는 1~100이어야 합니다.')
+    from quantdesk.real_ranking import build_ranking
+
+    week = dataset.week_inputs(signal_date)
+    ranked, exclusions = build_ranking(
+        week['listing'], week['prices_by_code'], week['eligible_statements'],
+        dataset.companies, week['signal_date'], minimum_history=252,
+    )
+    result = dict(week)
+    result['ranked'] = ranked
+    result['exclusions'] = exclusions
+    result['issues'] = list(week['issues'])
+    if len(ranked) < minimum_ready:
+        result['issues'].append(f'유효 후보 {len(ranked)}/100')
+    return result

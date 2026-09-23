@@ -45,6 +45,17 @@ class RealRankingTests(unittest.TestCase):
         self.assertEqual(selected['basis'], 'CFS')
         self.assertIsNone(select_statement(records, '000001', '2024-01-01'))
 
+    def test_corrected_filing_changes_only_after_correction_date(self):
+        original = statement(filed_at='2025-03-01')
+        corrected = statement(filed_at='2025-05-01')
+        corrected['receipt'] = '20250501000002'
+
+        before = select_statement([original, corrected], '000001', '2025-04-10')
+        after = select_statement([original, corrected], '000001', '2025-05-10')
+
+        self.assertEqual(before['receipt'], '20250301000001')
+        self.assertEqual(after['receipt'], '20250501000002')
+
     def test_build_ranking_explains_missing_financials(self):
         table, excluded = build_ranking(listing(), {'000001':prices(), '000003':prices()}, [statement()],
             {'000001':{'corp_code':'00000001', 'name':'알파'}}, '2025-12-31')

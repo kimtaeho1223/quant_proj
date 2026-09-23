@@ -2,8 +2,8 @@ import unittest
 
 import pandas as pd
 
-from quantdesk.backtest_data import BacktestDataError, BacktestDataset
-from backtest_fixtures import dataset_fixture, listing_fixture
+from quantdesk.backtest_data import BacktestDataError, BacktestDataset, rank_week
+from backtest_fixtures import dataset_fixture, listing_fixture, rank_ready_dataset_fixture
 
 
 class BacktestDatasetTests(unittest.TestCase):
@@ -59,6 +59,13 @@ class BacktestDatasetTests(unittest.TestCase):
         )
 
         self.assertTrue(data.schedule('2026-09-21', '2026-09-24').empty)
+
+    def test_rank_week_requires_eighty_factor_ready_candidates(self):
+        data = rank_ready_dataset_fixture(candidate_count=79)
+
+        week = rank_week(data, '2026-09-25', minimum_ready=80)
+
+        self.assertIn('유효 후보 79/100', week['issues'])
 
 
 if __name__ == '__main__':

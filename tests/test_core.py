@@ -1,6 +1,6 @@
 import unittest
 import pandas as pd
-from quantdesk.core import score_stocks, rebalance, DEFAULT_WEIGHTS
+from quantdesk.core import score_stocks, rebalance, select_targets, DEFAULT_WEIGHTS
 
 
 def universe():
@@ -11,6 +11,17 @@ def universe():
 
 
 class CoreTests(unittest.TestCase):
+    def test_select_targets_retains_held_name_ranked_thirty(self):
+        ranked = pd.DataFrame({
+            'code': [f'{number:06d}' for number in range(1, 32)],
+            'rank': list(range(1, 32)),
+        })
+
+        targets = select_targets(ranked, {'000030'}, target_count=20, retention_rank=30)
+
+        self.assertIn('000030', targets)
+        self.assertEqual(len(targets), 20)
+
     def test_scoring_and_filters(self):
         data = universe()
         data.loc[0, 'eligible'] = False

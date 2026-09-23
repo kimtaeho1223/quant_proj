@@ -19,6 +19,16 @@ def score_stocks(data, weights):
     return clean
 
 
+def select_targets(ranked, held_codes, target_count=20, retention_rank=30):
+    if target_count < 0 or retention_rank < 0:
+        raise ValueError('목표 종목 수와 유지 순위는 0 이상이어야 합니다.')
+    held = set(held_codes)
+    kept = ranked[(ranked['rank'] <= retention_rank) & ranked.code.isin(held)]
+    kept = kept.head(target_count).code.tolist()
+    fill = [code for code in ranked.code.tolist() if code not in kept]
+    return kept + fill[:target_count - len(kept)]
+
+
 def rebalance(ranked, holdings, cash, prices, min_trade=100_000, fee_rate=0.003):
     if not math.isfinite(cash) or cash < 0 or not 0 <= fee_rate < 1 or min_trade < 0:
         raise ValueError('현금과 거래비용 설정을 확인해 주세요.')
@@ -28,8 +38,7 @@ def rebalance(ranked, holdings, cash, prices, min_trade=100_000, fee_rate=0.003)
     prices = {**prices, **ranked.set_index('code').price.to_dict()}
     if any(code not in prices or not math.isfinite(prices[code]) or prices[code] <= 0 for code in holdings):
         raise ValueError('보유 종목의 유효한 가격이 없어 매매 제안을 계산할 수 없습니다.')
-    kept = ranked[(ranked['rank'] <= 30) & ranked.code.isin(holdings)].head(20).code.tolist()
-    targets = kept + [c for c in ranked.head(20).code if c not in kept][:20-len(kept)]
+    targets = select_targets(ranked, holdings)
     equity = cash + sum(prices[c] * q for c, q in holdings.items())
     # Reserve costs up front; unused allocations stay in cash if fewer than 20 names qualify.
     allocation = equity / 20 / (1 + fee_rate)
