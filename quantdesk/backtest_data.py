@@ -93,14 +93,15 @@ class BacktestDataset:
         last = _iso_date(end, '종료일')
         if first > last:
             raise BacktestDataError('시작일은 종료일보다 늦을 수 없습니다.')
-        sessions = self.calendar.loc[
-            self.calendar.date.between(first, last), 'date'
-        ].sort_values()
-        if sessions.empty:
+        all_sessions = self.calendar.date.sort_values()
+        if not all_sessions.map(lambda day: first <= day <= last).any():
             return pd.DataFrame(columns=['signal_date', 'execution_date'])
-        periods = pd.to_datetime(sessions).dt.to_period('W-FRI')
-        signals = sessions.groupby(periods).last().tolist()
-        all_sessions = self.calendar.date.tolist()
+        periods = pd.to_datetime(all_sessions).dt.to_period('W-FRI')
+        signals = [
+            day for day in all_sessions.groupby(periods).last().tolist()
+            if first <= day <= last
+        ]
+        all_sessions = all_sessions.tolist()
         rows = []
         for signal in signals:
             execution = next((day for day in all_sessions if day > signal), None)

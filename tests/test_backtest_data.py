@@ -60,6 +60,14 @@ class BacktestDatasetTests(unittest.TestCase):
 
         self.assertTrue(data.schedule('2026-09-21', '2026-09-24').empty)
 
+    def test_schedule_does_not_treat_midweek_end_as_weekly_signal(self):
+        data = dataset_fixture(
+            calendar=['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'],
+            snapshot_date='2026-09-30',
+        )
+
+        self.assertTrue(data.schedule('2026-09-28', '2026-09-30').empty)
+
     def test_rank_week_requires_eighty_factor_ready_candidates(self):
         data = rank_ready_dataset_fixture(candidate_count=79)
 
