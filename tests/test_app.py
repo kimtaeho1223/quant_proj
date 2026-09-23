@@ -14,6 +14,7 @@ class AppTests(unittest.TestCase):
             os.environ['QUANTDESK_DB'] = folder + '/app.db'
             os.environ['QUANTDESK_MARKET_DB'] = folder + '/market.db'
             os.environ['QUANTDESK_DART_DB'] = folder + '/dart.db'
+            os.environ['QUANTDESK_BACKTEST_DB'] = folder + '/backtest.db'
             try:
                 MarketStore(os.environ['QUANTDESK_MARKET_DB']).save_listing(pd.DataFrame([
                     dict(Code='005930', Name='삼성전자', Market='KOSPI', Marcap=1_000, Amount=100),
@@ -42,6 +43,13 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(app.button(key='refresh_prices').label, '선택 종목 주가 갱신')
                 self.assertEqual(app.button(key='refresh_top_prices').label, '상위 100개 주가 일괄 수집')
+                app.radio(key='page').set_value('백테스트').run()
+                self.assertEqual(len(app.exception), 0)
+                self.assertTrue(any('과거 종목군 스냅샷' in item.value for item in app.warning))
+                self.assertTrue(any(
+                    button.label == '백테스트 실행' and button.disabled
+                    for button in app.button
+                ))
                 app.radio(key='page').set_value('샘플 전략').run()
                 app.button(key='save_decision').click().run()
                 self.assertEqual(len(app.exception), 0)
@@ -53,3 +61,4 @@ class AppTests(unittest.TestCase):
                 os.environ.pop('QUANTDESK_DB', None)
                 os.environ.pop('QUANTDESK_MARKET_DB', None)
                 os.environ.pop('QUANTDESK_DART_DB', None)
+                os.environ.pop('QUANTDESK_BACKTEST_DB', None)
