@@ -9,9 +9,11 @@ from quantdesk.backtest_data import BacktestDataError, rank_week
 from quantdesk.backtest_execution import (
     BacktestExecutionError,
     execute_rebalance,
+    trade_cost,
     value_portfolio,
 )
-from quantdesk.real_ranking import select_statement
+from quantdesk.backtest_metrics import MetricError, build_comparison, performance_metrics
+from quantdesk.real_ranking import candidate_universe, select_statement
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,116 @@ def _blocking_actions(dataset, start, end):
     dates = pd.to_datetime(actions.effective_date, errors='coerce').dt.strftime('%Y-%m-%d')
     mask = dates.between(start, end) & actions.status.ne('validated')
     return _records(actions.loc[mask].assign(effective_date=dates.loc[mask]))
+
+
+def _run_fractional_benchmark(dataset, config, schedule, cost_model):
+    holdings = {}
+    cash = float(config.initial_cash)
+    last_valid = {}
+    nav_rows = [{
+        'date': config.start, 'cash': cash, 'positions_value': 0.0,
+        'equity': cash, 'external_flow': 0.0, 'carried_prices': 0,
+    }]
+    trade_rows = []
+    weekly_rows = []
+    issues = []
+    for index, row in schedule.iterrows():
+        signal = row.signal_date
+        execution_date = row.execution_date
+        listing = candidate_universe(dataset.snapshots[signal])
+        targets = listing.Code.tolist()
+        opens = {code: _price_on(dataset, code, execution_date, 'Open') for code in targets}
+        for code in holdings:
+            opens[code] = _price_on(dataset, code, execution_date, 'Open')
+        missing = [code for code, price in opens.items() if price is None]
+        if missing:
+            issues.append(f'{signal}: 벤치마크 시가 없음 {len(missing)}종목')
+            return {
+                'status': 'incomplete', 'nav': pd.DataFrame(nav_rows),
+                'weekly': pd.DataFrame(weekly_rows), 'trades': pd.DataFrame(trade_rows),
+                'issues': issues, 'cost_model': dict(cost_model), 'method': 'fractional_equal_weight',
+            }
+
+        equity = cash + sum(holdings[code] * opens[code] for code in holdings)
+        target_value = equity / len(targets)
+        desired = {code: target_value / opens[code] for code in targets}
+        trades = []
+        for code in sorted(set(holdings) | set(targets)):
+            delta = desired.get(code, 0.0) - holdings.get(code, 0.0)
+            if delta >= -1e-12:
+                continue
+            quantity = -delta
+            gross = quantity * opens[code]
+            costs = trade_cost(gross, '매도', cost_model)
+            cash += gross - costs['total']
+            holdings[code] = holdings.get(code, 0.0) - quantity
+            trades.append((code, '매도', quantity, gross, costs))
+
+        planned_buys = {
+            code: max(0.0, desired[code] - holdings.get(code, 0.0))
+            for code in targets
+        }
+        buy_gross = sum(quantity * opens[code] for code, quantity in planned_buys.items())
+        buy_rate = cost_model['fee_rate'] + cost_model['slippage_rate']
+        scale = min(1.0, cash / (buy_gross * (1 + buy_rate))) if buy_gross > 0 else 0.0
+        for code in targets:
+            quantity = planned_buys[code] * scale
+            if quantity <= 1e-12:
+                continue
+            gross = quantity * opens[code]
+            costs = trade_cost(gross, '매수', cost_model)
+            cash -= gross + costs['total']
+            holdings[code] = holdings.get(code, 0.0) + quantity
+            trades.append((code, '매수', quantity, gross, costs))
+        if -1e-6 < cash < 0:
+            cash = 0.0
+        elif cash < 0:
+            raise BacktestExecutionError('벤치마크 현금이 음수입니다.')
+        holdings = {code: quantity for code, quantity in holdings.items() if quantity > 1e-12}
+        for code in holdings:
+            close = _price_on(dataset, code, signal, 'Close')
+            if close is not None:
+                last_valid[code] = close
+        for code, side, quantity, gross, costs in trades:
+            trade_rows.append({
+                'signal_date': signal, 'execution_date': execution_date,
+                'code': code, 'side': side, 'quantity': quantity,
+                'price': opens[code], 'gross_amount': gross,
+                'fee': costs['fee'], 'tax': costs['tax'],
+                'slippage': costs['slippage'], 'cost_total': costs['total'],
+                'price_source': 'open',
+            })
+        weekly_rows.append({
+            'signal_date': signal, 'execution_date': execution_date,
+            'holding_count': len(holdings), 'cash_after': cash,
+            'turnover_amount': sum(item[3] for item in trades),
+            'cost_total': sum(item[4]['total'] for item in trades),
+        })
+
+        next_execution = schedule.iloc[index + 1].execution_date if index + 1 < len(schedule) else None
+        valuation_dates = [
+            day for day in dataset.calendar.date
+            if execution_date <= day <= config.end
+            and (next_execution is None or day < next_execution)
+        ]
+        for date in valuation_dates:
+            closes = {
+                code: price for code in holdings
+                if (price := _price_on(dataset, code, date, 'Close')) is not None
+            }
+            valuation = value_portfolio(holdings, cash, closes, last_valid)
+            last_valid = valuation['last_valid_prices']
+            nav_rows.append({
+                'date': date, 'cash': cash,
+                'positions_value': valuation['positions_value'],
+                'equity': valuation['equity'], 'external_flow': 0.0,
+                'carried_prices': sum(source == 'carried' for source in valuation['price_sources'].values()),
+            })
+    return {
+        'status': 'complete', 'nav': pd.DataFrame(nav_rows),
+        'weekly': pd.DataFrame(weekly_rows), 'trades': pd.DataFrame(trade_rows),
+        'issues': issues, 'cost_model': dict(cost_model), 'method': 'fractional_equal_weight',
+    }
 
 
 def run_backtest(dataset, config, external_cashflows=None):
@@ -267,4 +379,21 @@ def run_backtest(dataset, config, external_cashflows=None):
         dataset, config, status='complete', issues=issues,
         nav=nav_rows, weekly=weekly_rows, trades=trade_rows, audit=audit_rows,
     )
+    benchmark = _run_fractional_benchmark(dataset, config, schedule, cost_model)
+    result['benchmark'] = benchmark
+    if benchmark['status'] != 'complete':
+        result['status'] = 'incomplete'
+        result['issues'].extend(benchmark['issues'])
+        return result
+    try:
+        result['metrics'] = performance_metrics(result['nav'], risk_free_rate=0.0)
+        result['benchmark_metrics'] = performance_metrics(benchmark['nav'], risk_free_rate=0.0)
+        result['comparison'] = build_comparison(
+            result['nav'], benchmark['nav'],
+            dataset.indices.get('KOSPI', pd.DataFrame()),
+            dataset.indices.get('KOSDAQ', pd.DataFrame()),
+        )
+    except MetricError as exc:
+        result['status'] = 'incomplete'
+        result['issues'].append(f'성과 지표 계산 실패: {exc}')
     return result

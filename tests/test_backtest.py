@@ -96,6 +96,21 @@ class BacktestTests(unittest.TestCase):
 
         self.assertEqual(normalized(first), normalized(second))
 
+    def test_complete_run_includes_fractional_benchmark_with_matching_timing_and_costs(self):
+        config = BacktestConfig('2026-09-01', '2026-09-30')
+
+        result = run_backtest(three_week_fixture(), config)
+
+        self.assertIn('metrics', result)
+        self.assertIn('benchmark_metrics', result)
+        self.assertFalse(result['benchmark']['nav'].empty)
+        first = result['benchmark']['trades'].iloc[0]
+        self.assertEqual(first.execution_date, result['trades'].iloc[0].execution_date)
+        self.assertEqual(result['benchmark']['cost_model']['fee_rate'], config.fee_rate)
+        self.assertEqual(result['comparison'].columns.tolist(), [
+            'date', 'strategy', 'top100_equal_weight', 'kospi', 'kosdaq',
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()
