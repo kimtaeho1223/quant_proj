@@ -57,6 +57,15 @@ class MarketStore(Store):
             db.execute('CREATE TABLE IF NOT EXISTS market_listing (id INTEGER PRIMARY KEY, payload TEXT, fetched TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS market_prices (code TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL, PRIMARY KEY(code,date))')
             db.execute('CREATE TABLE IF NOT EXISTS market_logs (id INTEGER PRIMARY KEY, code TEXT, status TEXT, message TEXT, fetched TEXT)')
+            db.execute('''CREATE TABLE IF NOT EXISTS market_snapshots (
+                effective_date TEXT, code TEXT, name TEXT, market TEXT, security_type TEXT,
+                marcap REAL, amount REAL, PRIMARY KEY(effective_date,code))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS market_indices (
+                symbol TEXT, date TEXT, open REAL, close REAL, PRIMARY KEY(symbol,date))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS corporate_actions (
+                code TEXT, effective_date TEXT, action_type TEXT, ratio REAL,
+                cash_amount REAL, status TEXT, source TEXT,
+                PRIMARY KEY(code,effective_date,action_type))''')
 
     def record(self, code, status, message):
         with self.connect() as db:
@@ -102,6 +111,74 @@ class MarketStore(Store):
     def summary(self):
         with self.connect() as db:
             return pd.read_sql_query('SELECT code AS Code, MIN(date) AS 시작일, MAX(date) AS 마지막거래일, COUNT(*) AS 저장일수 FROM market_prices GROUP BY code', db)
+
+    def save_historical_snapshot(self, effective_date, frame):
+        date = pd.Timestamp(effective_date).date().isoformat()
+        required = {'Code', 'Name', 'Market', 'SecurityType', 'Marcap', 'Amount'}
+        if not isinstance(frame, pd.DataFrame) or not required.issubset(frame.columns):
+            raise ValueError('과거 종목군 필수 열이 없습니다.')
+        data = frame[list(required)].copy()
+        data['Code'] = data.Code.astype(str).str.zfill(6)
+        data[['Marcap', 'Amount']] = data[['Marcap', 'Amount']].apply(pd.to_numeric, errors='coerce')
+        if data.empty or data.Code.duplicated().any() or data[['Marcap', 'Amount']].isna().any().any():
+            raise ValueError('과거 종목군 코드 또는 시장값이 유효하지 않습니다.')
+        if (data[['Marcap', 'Amount']] <= 0).any().any():
+            raise ValueError('과거 종목군 시가총액과 거래대금은 양수여야 합니다.')
+        rows = [
+            (date, row.Code, row.Name, row.Market, row.SecurityType, float(row.Marcap), float(row.Amount))
+            for row in data.itertuples(index=False)
+        ]
+        with self.connect() as db:
+            db.execute('DELETE FROM market_snapshots WHERE effective_date=?', (date,))
+            db.executemany('INSERT INTO market_snapshots VALUES(?,?,?,?,?,?,?)', rows)
+
+    def historical_snapshot(self, effective_date):
+        date = pd.Timestamp(effective_date).date().isoformat()
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT effective_date, code AS Code, name AS Name,
+                market AS Market, security_type AS SecurityType, marcap AS Marcap, amount AS Amount
+                FROM market_snapshots WHERE effective_date=? ORDER BY marcap DESC, code''', db, params=(date,))
+
+    def save_index_prices(self, symbol, frame):
+        if not symbol or not isinstance(frame, pd.DataFrame) or not {'Date', 'Open', 'Close'}.issubset(frame.columns):
+            raise ValueError('지수 가격 필수 값을 확인해 주세요.')
+        data = frame[['Date', 'Open', 'Close']].copy()
+        data['Date'] = pd.to_datetime(data.Date, errors='coerce').dt.strftime('%Y-%m-%d')
+        data[['Open', 'Close']] = data[['Open', 'Close']].apply(pd.to_numeric, errors='coerce')
+        if data.empty or data.isna().any().any() or data.Date.duplicated().any() or (data[['Open', 'Close']] <= 0).any().any():
+            raise ValueError('지수 가격이 유효하지 않습니다.')
+        rows = [(str(symbol), row.Date, float(row.Open), float(row.Close)) for row in data.itertuples(index=False)]
+        with self.connect() as db:
+            db.execute('DELETE FROM market_indices WHERE symbol=?', (str(symbol),))
+            db.executemany('INSERT INTO market_indices VALUES(?,?,?,?)', rows)
+
+    def index_prices(self, symbol):
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT date AS Date, open AS Open, close AS Close
+                FROM market_indices WHERE symbol=? ORDER BY date''', db, params=(str(symbol),))
+
+    def save_corporate_actions(self, frame):
+        columns = ['code', 'effective_date', 'action_type', 'ratio', 'cash_amount', 'status', 'source']
+        if not isinstance(frame, pd.DataFrame) or not set(columns).issubset(frame.columns):
+            raise ValueError('기업행사 필수 열이 없습니다.')
+        data = frame[columns].copy()
+        data['code'] = data.code.astype(str).str.zfill(6)
+        data['effective_date'] = pd.to_datetime(data.effective_date, errors='coerce').dt.strftime('%Y-%m-%d')
+        data[['ratio', 'cash_amount']] = data[['ratio', 'cash_amount']].apply(pd.to_numeric, errors='coerce')
+        if data[['code', 'effective_date', 'action_type', 'status', 'source']].isna().any().any():
+            raise ValueError('기업행사 값이 유효하지 않습니다.')
+        rows = [tuple(row) for row in data.itertuples(index=False, name=None)]
+        with self.connect() as db:
+            db.executemany('INSERT OR REPLACE INTO corporate_actions VALUES(?,?,?,?,?,?,?)', rows)
+
+    def corporate_actions(self, start, end):
+        first = pd.Timestamp(start).date().isoformat()
+        last = pd.Timestamp(end).date().isoformat()
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT code, effective_date, action_type, ratio,
+                cash_amount, status, source FROM corporate_actions
+                WHERE effective_date BETWEEN ? AND ? ORDER BY effective_date,code,action_type''',
+                db, params=(first, last))
 
 
 def refresh_listing(store):

@@ -5,6 +5,7 @@ from datetime import date
 import pandas as pd
 from quantdesk.market import MarketStore, normalize_prices, refresh_prices, refresh_top_prices
 from quantdesk.market_worker import read_listing
+from backtest_fixtures import listing_fixture
 
 
 def prices():
@@ -13,6 +14,48 @@ def prices():
 
 
 class MarketTests(unittest.TestCase):
+    def test_historical_snapshot_round_trip_preserves_effective_date(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+
+            store.save_historical_snapshot('2026-09-25', listing_fixture())
+            saved = store.historical_snapshot('2026-09-25')
+
+            self.assertEqual(saved.effective_date.unique().tolist(), ['2026-09-25'])
+            self.assertEqual(len(saved), 100)
+
+    def test_invalid_historical_snapshot_preserves_saved_date(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+            store.save_historical_snapshot('2026-09-25', listing_fixture())
+
+            with self.assertRaisesRegex(ValueError, '필수 열'):
+                store.save_historical_snapshot(
+                    '2026-09-25', listing_fixture().drop(columns=['Marcap']),
+                )
+
+            self.assertEqual(len(store.historical_snapshot('2026-09-25')), 100)
+
+    def test_index_and_corporate_action_round_trip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MarketStore(Path(folder) / 'market.db')
+            index = pd.DataFrame([
+                {'Date': '2026-09-24', 'Open': 3_000, 'Close': 3_010},
+                {'Date': '2026-09-25', 'Open': 3_020, 'Close': 3_030},
+            ])
+            actions = pd.DataFrame([{
+                'code': '005930', 'effective_date': '2026-09-25',
+                'action_type': 'split', 'ratio': 2.0, 'cash_amount': None,
+                'status': 'validated', 'source': 'KRX',
+            }])
+
+            store.save_index_prices('KOSPI', index)
+            store.save_corporate_actions(actions)
+
+            self.assertEqual(store.index_prices('KOSPI').Close.tolist(), [3_010, 3_030])
+            saved = store.corporate_actions('2026-09-01', '2026-09-30')
+            self.assertEqual(saved.status.tolist(), ['validated'])
+
     def test_latest_results_keep_only_last_attempt_per_symbol(self):
         with tempfile.TemporaryDirectory() as folder:
             store = MarketStore(Path(folder) / 'market.db')
