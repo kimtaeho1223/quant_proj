@@ -109,7 +109,8 @@ def _display_frame(value):
 
 
 def render_backtest_result(result, run_id):
-    st.caption(f'실행 ID #{run_id} · 입력 fingerprint {result["fingerprint"]}')
+    version = result.get('engine_version', '기록 없음')
+    st.caption(f'실행 ID #{run_id} · 엔진 {version} · 입력 fingerprint {result["fingerprint"]}')
     st.warning('배당 제외 가격수익률입니다. 무위험수익률은 연 0%로 계산합니다.')
     if result['status'] != 'complete':
         st.error('백테스트가 완전하게 끝나지 않아 공식 성과 지표를 표시하지 않습니다.')

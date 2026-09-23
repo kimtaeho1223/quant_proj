@@ -76,6 +76,21 @@ class BacktestTests(unittest.TestCase):
         self.assertTrue(any('검증되지 않은 기업행사' in issue for issue in result['issues']))
         self.assertNotIn('metrics', result)
 
+    def test_unvalidated_corporate_action_in_warmup_stops_official_result(self):
+        dataset = three_week_fixture()
+        dataset.corporate_actions = pd.DataFrame([{
+            'code': '000001', 'effective_date': '2026-08-20',
+            'action_type': 'split', 'status': 'unknown',
+        }])
+
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('검증되지 않은 기업행사' in issue for issue in result['issues']))
+        self.assertNotIn('metrics', result)
+
     def test_identical_inputs_produce_identical_normalized_results(self):
         dataset = three_week_fixture()
         config = BacktestConfig('2026-09-01', '2026-09-30')
@@ -95,6 +110,13 @@ class BacktestTests(unittest.TestCase):
             }, sort_keys=True, ensure_ascii=False, default=str)
 
         self.assertEqual(normalized(first), normalized(second))
+
+    def test_result_records_the_engine_version_for_reproduction(self):
+        result = run_backtest(
+            three_week_fixture(), BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertEqual(result['engine_version'], '0.4.0')
 
     def test_complete_run_includes_fractional_benchmark_with_matching_timing_and_costs(self):
         config = BacktestConfig('2026-09-01', '2026-09-30')

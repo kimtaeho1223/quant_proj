@@ -16,6 +16,9 @@ from quantdesk.backtest_metrics import MetricError, build_comparison, performanc
 from quantdesk.real_ranking import candidate_universe, select_statement
 
 
+ENGINE_VERSION = '0.4.0'
+
+
 @dataclass(frozen=True)
 class BacktestConfig:
     start: str
@@ -68,6 +71,7 @@ def _empty_result(dataset, config, status='incomplete', issues=None, nav=None,
                   weekly=None, trades=None, audit=None):
     return {
         'status': status,
+        'engine_version': ENGINE_VERSION,
         'config': asdict(config),
         'fingerprint': dataset.fingerprint(),
         'nav': pd.DataFrame(nav or [], columns=[
@@ -215,7 +219,15 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
 
 def run_backtest(dataset, config, external_cashflows=None):
     flows = _cashflows(external_cashflows)
-    blocking_actions = _blocking_actions(dataset, config.start, config.end)
+    schedule = dataset.schedule(config.start, config.end)
+    schedule = schedule[schedule.execution_date <= config.end].reset_index(drop=True)
+    if schedule.empty:
+        return _empty_result(dataset, config, issues=['실행 가능한 완료 주차가 없습니다.'])
+
+    first_signal = schedule.iloc[0].signal_date
+    signal_history = dataset.calendar[dataset.calendar.date <= first_signal].date.tolist()
+    validation_start = signal_history[-252] if len(signal_history) >= 252 else signal_history[0]
+    blocking_actions = _blocking_actions(dataset, validation_start, config.end)
     if blocking_actions:
         return _empty_result(
             dataset, config,
@@ -223,11 +235,6 @@ def run_backtest(dataset, config, external_cashflows=None):
                     for item in blocking_actions],
             audit=[{'blocking_corporate_actions': blocking_actions}],
         )
-
-    schedule = dataset.schedule(config.start, config.end)
-    schedule = schedule[schedule.execution_date <= config.end].reset_index(drop=True)
-    if schedule.empty:
-        return _empty_result(dataset, config, issues=['실행 가능한 완료 주차가 없습니다.'])
 
     holdings = {}
     cash = float(config.initial_cash)
