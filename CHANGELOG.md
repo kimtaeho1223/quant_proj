@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 - 2026-09-23
+
+- Add a point-in-time weekly backtest engine with Friday signals and next-session open execution.
+- Enforce 252-session warm-up, at least 80 valid candidates per week, and blocking corporate-action checks.
+- Add cash-reconciled execution, costs, top-100 equal-weight and KOSPI/KOSDAQ comparisons, and performance metrics.
+- Persist source fingerprints, configuration, NAV, trades, weekly holdings, filings, exclusions, and audit evidence.
+- Add a readiness-first Streamlit workflow that withholds official metrics from incomplete runs.
+
 ## 0.3.4 - 2026-09-20
 
 - Add incremental annual-statement collection that skips symbols already saved for the selected year.

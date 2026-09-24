@@ -19,18 +19,20 @@ def candidate_universe(listing, limit=100):
     return data.loc[keep].sort_values(['Marcap', 'Code'], ascending=[False, True]).head(limit).reset_index(drop=True)
 
 
-def price_factors(prices, as_of):
+def price_factors(prices, as_of, minimum_history=252):
+    if minimum_history < 2:
+        raise ValueError('주가 이력 기준은 2거래일 이상이어야 합니다.')
     if not {'Date', 'Close'}.issubset(prices.columns):
         raise ValueError('일별 종가 없음')
     data = prices[['Date', 'Close']].copy()
     data.Date = pd.to_datetime(data.Date, errors='coerce')
     data.Close = pd.to_numeric(data.Close, errors='coerce')
     data = data.dropna().sort_values('Date').drop_duplicates('Date', keep='last')
-    data = data[(data.Date <= pd.Timestamp(as_of)) & data.Close.gt(0)].tail(252)
-    if len(data) < 252:
-        raise ValueError('252거래일 주가 부족')
+    data = data[(data.Date <= pd.Timestamp(as_of)) & data.Close.gt(0)].tail(minimum_history)
+    if len(data) < minimum_history:
+        raise ValueError(f'{minimum_history}거래일 주가 부족')
     returns = data.Close.pct_change().dropna()
-    if len(returns) < 251 or not returns.map(math.isfinite).all():
+    if len(returns) < minimum_history - 1 or not returns.map(math.isfinite).all():
         raise ValueError('일별 수익률 계산 불가')
     return dict(price=float(data.Close.iloc[-1]), momentum=float((data.Close.iloc[-1] / data.Close.iloc[0] - 1) * 100),
                 volatility=float(returns.std(ddof=1) * math.sqrt(252) * 100), price_date=data.Date.iloc[-1].date().isoformat())
@@ -44,13 +46,13 @@ def select_statement(statements, code, as_of):
     return sorted(records, key=lambda entry: (entry['year'], entry['basis'] == 'CFS', entry['filed_at'], entry['receipt']), reverse=True)[0]
 
 
-def build_ranking(listing, prices_by_code, statements, companies, as_of, weights=None):
+def build_ranking(listing, prices_by_code, statements, companies, as_of, weights=None, minimum_history=252):
     candidates = candidate_universe(listing)
     usable, exclusions = [], []
     for row in candidates.itertuples(index=False):
         code = row.Code
         try:
-            price = price_factors(prices_by_code.get(code, pd.DataFrame()), as_of)
+            price = price_factors(prices_by_code.get(code, pd.DataFrame()), as_of, minimum_history=minimum_history)
             statement = select_statement(statements, code, as_of)
             if statement is None:
                 raise ValueError('공시일이 지난 재무제표 없음')

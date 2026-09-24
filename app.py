@@ -10,9 +10,18 @@ from quantdesk.storage import Store
 from quantdesk.market_ui import render_market
 from quantdesk.dart_ui import render_dart
 from quantdesk.real_ranking_ui import render_real_ranking
+from quantdesk.backtest_ui import render_backtest
 
 st.set_page_config(page_title='Quant Desk KR', page_icon=':material/monitoring:', layout='wide')
-page = st.sidebar.radio('화면', ['샘플 전략', '실제 주가 데이터', '재무정보', '실제 멀티팩터 순위'], key='page')
+page = st.sidebar.radio('화면', ['샘플 전략', '실제 주가 데이터', '재무정보', '실제 멀티팩터 순위', '백테스트'], key='page')
+if page == '백테스트':
+    st.title('Quant Desk KR')
+    render_backtest(
+        os.environ.get('QUANTDESK_MARKET_DB', str(Path(__file__).parent / 'data' / 'market.db')),
+        os.environ.get('QUANTDESK_DART_DB', str(Path(__file__).parent / 'data' / 'dart.db')),
+        os.environ.get('QUANTDESK_BACKTEST_DB', str(Path(__file__).parent / 'data' / 'backtest.db')),
+    )
+    st.stop()
 if page == '실제 멀티팩터 순위':
     st.title('Quant Desk KR')
     render_real_ranking(
