@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-10-01
+
+- Add official Public Data Portal acquisition for daily full-market KOSPI and KOSDAQ data.
+- Archive immutable, SHA-256-addressed raw versions before normalization and validation.
+- Persist resumable date states, worker leases, validation findings, and canonical daily rows in SQLite.
+- Quarantine changed sources and market-wide anomalies instead of overwriting prior validated data.
+- Add a background worker plus Streamlit start, pause, resume, status, and official-CSV recovery workflow.
+- Keep historical acquisition isolated from engine-facing snapshots until lifecycle and corporate-action validation is complete.
+
 ## 0.4.0 - 2026-09-23
 
 - Add a point-in-time weekly backtest engine with Friday signals and next-session open execution.
