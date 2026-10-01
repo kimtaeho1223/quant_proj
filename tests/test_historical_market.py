@@ -127,6 +127,14 @@ class DailyMarketNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized.iloc[0].volume, 0)
         self.assertEqual(normalized.iloc[0].amount, 0)
 
+    def test_krx_market_segments_normalize_to_parent_market(self):
+        frame = official_rows()
+        frame.loc[1, 'mrktCtg'] = 'KOSDAQ GLOBAL'
+
+        normalized = normalize_daily_market(frame, '2026-09-25')
+
+        self.assertEqual(normalized.market.tolist(), ['KOSPI', 'KOSDAQ'])
+
     def test_hard_validation_rejects_bad_rows_but_allows_zero_trading(self):
         normalized = normalize_daily_market(official_rows(), '2026-09-25')
         self.assertEqual(validate_daily_market(normalized, '2026-09-25'), [])
@@ -154,6 +162,19 @@ class DailyMarketNormalizationTests(unittest.TestCase):
         )
         self.assertTrue(all(finding.severity == 'quarantine' for finding in findings))
         self.assertEqual(len(normalized), 2)
+
+    def test_marcap_anomaly_uses_previous_session_before_rolling_history_is_full(self):
+        normalized = normalize_daily_market(official_rows(), '2026-09-25')
+        findings = validate_daily_market(
+            normalized,
+            '2026-09-25',
+            prior_summaries=[{
+                'row_count': len(normalized),
+                'total_marcap': normalized.marcap.sum() / 2,
+            }],
+        )
+
+        self.assertIn('marcap_anomaly', {finding.rule_id for finding in findings})
 
 
 if __name__ == '__main__':

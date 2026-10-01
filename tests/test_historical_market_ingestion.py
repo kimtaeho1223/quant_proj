@@ -81,6 +81,50 @@ class HistoricalMarketIngestionTests(unittest.TestCase):
         )
         self.assertEqual(len(source.calls), 3)
 
+    def test_non_session_confirmation_requires_and_records_official_evidence(self):
+        empty = DailySourceResult(
+            '2026-09-25', 'data_go_kr', b'{"pages": []}',
+            {'non_session_candidate': True},
+        )
+        service = HistoricalIngestionService(
+            self.store, self.archive, FakeSource([empty, empty, empty]),
+            service_key='key', sleeper=lambda _: None,
+        )
+        job_id = service.create_job('2026-09-25', '2026-09-25')
+        for _ in range(3):
+            service.process_next(job_id)
+
+        with self.assertRaisesRegex(ValueError, '근거'):
+            service.confirm_non_session(job_id, '2026-09-25', '  ')
+
+        service.confirm_non_session(
+            job_id,
+            '2026-09-25',
+            '한국거래소 2026년 휴장일 공지 확인',
+        )
+
+        row = self.store.job_dates(job_id).iloc[0]
+        self.assertEqual(row.state, DateState.NON_SESSION.value)
+        self.assertIn('한국거래소', row.message)
+
+    def test_official_csv_can_resolve_empty_api_responses_without_false_checksum_alarm(self):
+        empty = DailySourceResult(
+            '2026-09-25', 'data_go_kr', b'{"pages": []}',
+            {'non_session_candidate': True},
+        )
+        service = HistoricalIngestionService(
+            self.store, self.archive, FakeSource([empty, empty, empty]),
+            service_key='key', sleeper=lambda _: None,
+        )
+        job_id = service.create_job('2026-09-25', '2026-09-25')
+        for _ in range(3):
+            service.process_next(job_id)
+
+        result = service.import_csv(job_id, '2026-09-25', csv_bytes())
+
+        self.assertEqual(result['state'], DateState.PROMOTED.value)
+        self.assertEqual(len(self.store.canonical_day('2026-09-25')), 2)
+
     def test_changed_official_version_is_quarantined_not_overwritten(self):
         first = self.result()
         source = FakeSource([first])

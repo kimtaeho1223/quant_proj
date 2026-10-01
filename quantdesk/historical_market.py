@@ -242,6 +242,8 @@ def normalize_daily_market(frame, requested_date):
     data['code'] = data.code.map(_normalize_code)
     data['name'] = data.name.astype(str).str.strip()
     data['market'] = data.market.astype(str).str.strip().str.upper()
+    data.loc[data.market.str.startswith('KOSPI'), 'market'] = 'KOSPI'
+    data.loc[data.market.str.startswith('KOSDAQ'), 'market'] = 'KOSDAQ'
     data['segment'] = data.segment.fillna('').astype(str).str.strip()
     numeric = ['open', 'high', 'low', 'close', 'volume', 'amount', 'marcap', 'listed_shares']
     for column in numeric:
@@ -294,6 +296,7 @@ def validate_daily_market(frame, requested_date, prior_summaries=(),
                 'quarantine', 'row_count_anomaly', '최근 거래일 대비 종목 수가 급변했습니다.',
                 len(frame), f'{expected_rows * 0.9:.1f}..{expected_rows * 1.1:.1f}',
             ))
+    if history:
         previous_marcap = float(history[-1]['total_marcap'])
         current_marcap = float(frame.marcap.sum())
         change = abs(current_marcap / previous_marcap - 1) if previous_marcap else float('inf')
@@ -339,6 +342,17 @@ class HistoricalIngestionService:
 
     def resume(self, job_id):
         self.store.set_pause(job_id, False)
+
+    def confirm_non_session(self, job_id, day, evidence):
+        evidence = str(evidence).strip()
+        if not evidence:
+            raise ValueError('휴장일 확정에는 공식 근거가 필요합니다.')
+        self.store.transition_date(
+            job_id,
+            day,
+            DateState.NON_SESSION,
+            f'공식 휴장 근거: {evidence}',
+        )
 
     def process_next(self, job_id):
         if self.store.pause_requested(job_id):
@@ -398,7 +412,8 @@ class HistoricalIngestionService:
         source_frame = decode_source_result(result)
         normalized = normalize_daily_market(source_frame, day)
         self.store.transition_date(job_id, day, DateState.PARSED)
-        changed = not previous.empty and archived.sha256 not in set(previous.sha256)
+        same_source = previous[previous.source_type == archived.source_type]
+        changed = not same_source.empty and archived.sha256 not in set(same_source.sha256)
         findings = validate_daily_market(
             normalized,
             day,

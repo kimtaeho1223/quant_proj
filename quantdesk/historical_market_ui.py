@@ -113,6 +113,26 @@ def render_historical_market(db_path, raw_root, launcher=launch_historical_worke
                 except (ValueError, OSError) as exc:
                     st.error(str(exc))
 
+            selected_state = problem.set_index('trade_date').loc[selected, 'state']
+            if selected_state == 'calendar_unresolved':
+                evidence = st.text_input(
+                    '공식 휴장 근거',
+                    placeholder='예: 한국거래소 2026년 휴장일 공지 확인',
+                    key='historical_non_session_evidence',
+                )
+                if st.button(
+                    '휴장일로 확정',
+                    icon=':material/event_busy:',
+                    key='historical_confirm_non_session',
+                    disabled=not evidence.strip(),
+                ):
+                    service = HistoricalIngestionService(store, RawArchive(raw_root), source=None)
+                    try:
+                        service.confirm_non_session(latest['id'], selected, evidence)
+                        st.success(f'{selected}을 공식 휴장일로 확정했습니다.')
+                    except ValueError as exc:
+                        st.error(str(exc))
+
     acquisition_complete = remaining == 0 and summary['promoted'] + summary['non_session'] == summary['total']
     if acquisition_complete:
         st.success('일별 전체시장 원본 수집이 완료되었습니다.')

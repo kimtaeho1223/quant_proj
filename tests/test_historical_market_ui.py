@@ -5,6 +5,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from quantdesk.historical_market import DateState
 from quantdesk.historical_market_store import HistoricalMarketStore
 
 
@@ -45,6 +46,28 @@ class HistoricalMarketUiTests(unittest.TestCase):
         self.app.button(key='historical_pause').click().run()
         store = HistoricalMarketStore(os.environ['QUANTDESK_MARKET_DB'])
         self.assertTrue(store.pause_requested(store.latest_job()['id']))
+
+    def test_unresolved_weekday_requires_evidence_before_non_session_confirmation(self):
+        store = HistoricalMarketStore(os.environ['QUANTDESK_MARKET_DB'])
+        job_id = store.create_job(
+            '2026-09-25', '2026-09-25', ['2026-09-25'], 'api',
+        )
+        store.transition_date(job_id, '2026-09-25', DateState.DOWNLOADING)
+        store.transition_date(job_id, '2026-09-25', DateState.DOWNLOADED)
+        store.transition_date(job_id, '2026-09-25', DateState.CALENDAR_UNRESOLVED)
+
+        self.app.run()
+
+        button = self.app.button(key='historical_confirm_non_session')
+        self.assertTrue(button.disabled)
+        self.app.text_input(key='historical_non_session_evidence').set_value(
+            '한국거래소 휴장 공지 확인',
+        ).run()
+        self.app.button(key='historical_confirm_non_session').click().run()
+
+        row = store.job_dates(job_id).iloc[0]
+        self.assertEqual(row.state, DateState.NON_SESSION.value)
+        self.assertIn('한국거래소', row.message)
 
 
 if __name__ == '__main__':
