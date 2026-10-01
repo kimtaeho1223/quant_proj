@@ -1,5 +1,7 @@
 import unittest
 
+import requests
+
 from quantdesk.historical_market import normalize_daily_market
 from quantdesk.historical_market_source import (
     DataGoKrDailySource,
@@ -19,11 +21,13 @@ def api_item(code, market='KOSPI', date='20260925'):
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
-        return None
+        if self.status_code >= 400:
+            raise requests.HTTPError(response=self)
 
     def json(self):
         return self.payload
@@ -36,7 +40,8 @@ class FakeSession:
 
     def get(self, url, params, timeout, headers):
         self.calls.append((url, dict(params), timeout, dict(headers)))
-        return FakeResponse(self.payloads.pop(0))
+        response = self.payloads.pop(0)
+        return response if isinstance(response, FakeResponse) else FakeResponse(response)
 
 
 def success_payload(items, total):
@@ -80,6 +85,26 @@ class DataGoKrDailySourceTests(unittest.TestCase):
             DataGoKrDailySource(session=session).fetch('2026-09-25', 'very-secret-key')
 
         self.assertNotIn('very-secret-key', str(caught.exception))
+
+    def test_gateway_authentication_error_is_read_before_http_status_is_raised(self):
+        session = FakeSession([FakeResponse({
+            'OpenAPI_ServiceResponse': {
+                'cmmMsgHeader': {
+                    'errMsg': 'SERVICE_KEY_IS_NOT_REGISTERED_ERROR',
+                    'returnReasonCode': '30',
+                },
+            },
+        }, status_code=403)])
+
+        with self.assertRaisesRegex(SourceAuthenticationError, '30'):
+            DataGoKrDailySource(session=session).fetch('2026-09-25', 'very-secret-key')
+
+    def test_encoded_service_key_is_decoded_once_before_requests_encodes_it(self):
+        session = FakeSession([success_payload([], 0)])
+
+        DataGoKrDailySource(session=session).fetch('2026-09-25', 'abc%2Bdef%2Fghi%3D')
+
+        self.assertEqual(session.calls[0][1]['serviceKey'], 'abc+def/ghi=')
 
     def test_empty_success_is_marked_as_non_session_candidate(self):
         session = FakeSession([success_payload([], 0)])

@@ -3,6 +3,7 @@
 import io
 import json
 import time
+from urllib.parse import unquote
 
 import pandas as pd
 import requests
@@ -50,6 +51,7 @@ class DataGoKrDailySource:
     def fetch(self, requested_date, service_key):
         if not service_key:
             raise SourceAuthenticationError('공공데이터포털 인증키가 필요합니다.')
+        service_key = unquote(str(service_key).strip())
         pages = []
         total = None
         page = 1
@@ -69,12 +71,29 @@ class DataGoKrDailySource:
                     timeout=self.timeout,
                     headers={'User-Agent': 'QuantDeskKR/0.1 personal-research'},
                 )
-                response.raise_for_status()
-                payload = response.json()
             except requests.Timeout as exc:
                 raise SourceTimeoutError('공식 제공처 응답 시간이 초과되었습니다.') from exc
-            except (requests.RequestException, ValueError) as exc:
+            except requests.RequestException as exc:
                 raise SourceProviderError('공식 제공처 응답을 읽을 수 없습니다.') from exc
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise SourceProviderError('공식 제공처 응답을 읽을 수 없습니다.') from exc
+            gateway_header = (
+                payload.get('OpenAPI_ServiceResponse', {}).get('cmmMsgHeader', {})
+                if isinstance(payload, dict) else {}
+            )
+            if gateway_header:
+                self._raise_provider_error(
+                    gateway_header.get('returnReasonCode'),
+                    gateway_header.get('errMsg') or gateway_header.get('returnAuthMsg'),
+                )
+            try:
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise SourceProviderError(
+                    f'공식 제공처 HTTP 오류 ({getattr(response, "status_code", "unknown")})'
+                ) from exc
             body = self._validated_body(payload)
             pages.append(payload)
             items = _items(body)
@@ -112,6 +131,12 @@ class DataGoKrDailySource:
         if code == '00':
             return response.get('body') or {}
         message = str(header.get('resultMsg') or '공식 제공처 오류')
+        DataGoKrDailySource._raise_provider_error(code, message)
+
+    @staticmethod
+    def _raise_provider_error(code, message):
+        code = str(code or '')
+        message = str(message or '공식 제공처 오류')
         if code in {'20', '30', '31'}:
             raise SourceAuthenticationError(f'공공데이터포털 인증 오류 ({code}): {message}')
         if code == '22':
