@@ -48,11 +48,12 @@ _ALLOWED_TRANSITIONS = {
     },
     DateState.DOWNLOADED: {
         DateState.PARSED, DateState.FAILED, DateState.QUARANTINED,
+        DateState.CALENDAR_UNRESOLVED,
     },
     DateState.PARSED: {
         DateState.VALIDATED, DateState.FAILED, DateState.QUARANTINED,
     },
-    DateState.VALIDATED: {DateState.PROMOTED, DateState.QUARANTINED},
+    DateState.VALIDATED: {DateState.PROMOTED, DateState.QUARANTINED, DateState.FAILED},
     DateState.FAILED: {DateState.DOWNLOADING},
     DateState.QUARANTINED: {DateState.DOWNLOADING},
     DateState.CALENDAR_UNRESOLVED: {DateState.DOWNLOADING, DateState.NON_SESSION},
@@ -309,3 +310,90 @@ def validate_daily_market(frame, requested_date, prior_summaries=(),
             'quarantine', 'schema_drift', '공식 제공처의 열 구조가 변경되었습니다.',
         ))
     return findings
+
+
+class HistoricalIngestionService:
+    """Coordinate one-date-at-a-time archival, validation, and promotion."""
+
+    def __init__(self, store, archive, source, service_key='', sleeper=None, max_attempts=3):
+        self.store = store
+        self.archive = archive
+        self.source = source
+        self.service_key = service_key
+        self.sleeper = sleeper or (lambda _seconds: None)
+        self.max_attempts = int(max_attempts)
+
+    def create_job(self, start_date, end_date, source_mode='api'):
+        start = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date)
+        if start > end:
+            raise ValueError('수집 시작일은 종료일보다 늦을 수 없습니다.')
+        dates = [day.strftime('%Y-%m-%d') for day in pd.date_range(start, end) if day.weekday() < 5]
+        if not dates:
+            raise ValueError('요청 기간에 수집할 평일이 없습니다.')
+        return self.store.create_job(start.date().isoformat(), end.date().isoformat(), dates, source_mode)
+
+    def request_pause(self, job_id):
+        self.store.set_pause(job_id, True)
+
+    def resume(self, job_id):
+        self.store.set_pause(job_id, False)
+
+    def process_next(self, job_id):
+        if self.store.pause_requested(job_id):
+            return None
+        day = self.store.next_processable_date(job_id, self.max_attempts)
+        if day is None:
+            return None
+        self.store.transition_date(job_id, day, DateState.DOWNLOADING)
+        try:
+            result = self.source.fetch(day, self.service_key)
+            previous = self.store.raw_versions(day)
+            archived = self.archive.store(result)
+            raw_id = self.store.record_raw_version(archived, result.safe_metadata)
+            self.store.transition_date(job_id, day, DateState.DOWNLOADED)
+
+            if result.safe_metadata.get('non_session_candidate'):
+                attempts = int(self.store.job_dates(job_id).set_index('trade_date').loc[day, 'attempts'])
+                target = DateState.CALENDAR_UNRESOLVED if attempts >= self.max_attempts else DateState.FAILED
+                self.store.transition_date(job_id, day, target, '공식 자료가 없어 거래일 여부를 확인해야 합니다.')
+                return {'trade_date': day, 'state': target.value}
+
+            from quantdesk.historical_market_source import decode_source_result
+            source_frame = decode_source_result(result)
+            normalized = normalize_daily_market(source_frame, day)
+            self.store.transition_date(job_id, day, DateState.PARSED)
+            changed = not previous.empty and archived.sha256 not in set(previous.sha256)
+            findings = validate_daily_market(
+                normalized,
+                day,
+                prior_summaries=self.store.prior_summaries(day),
+                changed_checksum=changed,
+            )
+            self.store.save_findings(raw_id, findings)
+            if any(item.severity == 'quarantine' for item in findings):
+                self.store.transition_date(job_id, day, DateState.QUARANTINED, '검증 경고로 격리되었습니다.')
+                return {'trade_date': day, 'state': DateState.QUARANTINED.value}
+            self.store.transition_date(job_id, day, DateState.VALIDATED)
+            self.store.promote_day(job_id, day, raw_id, normalized)
+            return {'trade_date': day, 'state': DateState.PROMOTED.value}
+        except Exception as exc:
+            current = self.store.date_state(job_id, day)
+            if current in {
+                DateState.DOWNLOADING, DateState.DOWNLOADED,
+                DateState.PARSED, DateState.VALIDATED,
+            }:
+                safe_message = str(exc)
+                if self.service_key:
+                    safe_message = safe_message.replace(self.service_key, '[redacted]')
+                self.store.transition_date(job_id, day, DateState.FAILED, safe_message)
+            raise
+
+    def run(self, job_id):
+        results = []
+        while not self.store.pause_requested(job_id):
+            result = self.process_next(job_id)
+            if result is None:
+                break
+            results.append(result)
+        return results
