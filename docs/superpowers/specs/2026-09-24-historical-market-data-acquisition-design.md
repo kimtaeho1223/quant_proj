@@ -23,12 +23,13 @@ Later increments will add historical security classification and listing life cy
 
 ## Source Policy
 
-The collector prefers free official data. The primary market source is the KRX Data Marketplace daily all-issues data, which exposes security identifiers, market labels, OHLC, volume, trading value, market capitalization, and listed shares. OpenDART remains a separate source for a later financial-statement increment.
+The collector prefers free official data. Automatic acquisition uses the Financial Services Commission stock-price OpenAPI on the Public Data Portal, which distributes KRX-linked daily security identifiers, market labels, OHLC, volume, trading value, market capitalization, and listed shares. An official KRX Data Marketplace CSV is the manual fallback. OpenDART remains a separate source for a later financial-statement increment.
 
 An automatic adapter may use only a permitted and stable official download route. It must apply conservative pacing and must not bypass access controls. If an official automatic route is unavailable, unstable, or not permitted, the workflow falls back to importing an official downloaded CSV. Third-party data is not silently substituted.
 
 Source references:
 
+- [Financial Services Commission stock-price OpenAPI](https://www.data.go.kr/data/15094808/openapi.do)
 - [KRX all-issues prices](https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd?screenId=MDCSTAT015)
 - [OpenDART disclosure API guide](https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS001)
 
