@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -320,7 +321,7 @@ class HistoricalIngestionService:
         self.archive = archive
         self.source = source
         self.service_key = service_key
-        self.sleeper = sleeper or (lambda _seconds: None)
+        self.sleeper = sleeper or time.sleep
         self.max_attempts = int(max_attempts)
 
     def create_job(self, start_date, end_date, source_mode='api'):
@@ -348,35 +349,7 @@ class HistoricalIngestionService:
         self.store.transition_date(job_id, day, DateState.DOWNLOADING)
         try:
             result = self.source.fetch(day, self.service_key)
-            previous = self.store.raw_versions(day)
-            archived = self.archive.store(result)
-            raw_id = self.store.record_raw_version(archived, result.safe_metadata)
-            self.store.transition_date(job_id, day, DateState.DOWNLOADED)
-
-            if result.safe_metadata.get('non_session_candidate'):
-                attempts = int(self.store.job_dates(job_id).set_index('trade_date').loc[day, 'attempts'])
-                target = DateState.CALENDAR_UNRESOLVED if attempts >= self.max_attempts else DateState.FAILED
-                self.store.transition_date(job_id, day, target, '공식 자료가 없어 거래일 여부를 확인해야 합니다.')
-                return {'trade_date': day, 'state': target.value}
-
-            from quantdesk.historical_market_source import decode_source_result
-            source_frame = decode_source_result(result)
-            normalized = normalize_daily_market(source_frame, day)
-            self.store.transition_date(job_id, day, DateState.PARSED)
-            changed = not previous.empty and archived.sha256 not in set(previous.sha256)
-            findings = validate_daily_market(
-                normalized,
-                day,
-                prior_summaries=self.store.prior_summaries(day),
-                changed_checksum=changed,
-            )
-            self.store.save_findings(raw_id, findings)
-            if any(item.severity == 'quarantine' for item in findings):
-                self.store.transition_date(job_id, day, DateState.QUARANTINED, '검증 경고로 격리되었습니다.')
-                return {'trade_date': day, 'state': DateState.QUARANTINED.value}
-            self.store.transition_date(job_id, day, DateState.VALIDATED)
-            self.store.promote_day(job_id, day, raw_id, normalized)
-            return {'trade_date': day, 'state': DateState.PROMOTED.value}
+            return self._ingest_result(job_id, day, result)
         except Exception as exc:
             current = self.store.date_state(job_id, day)
             if current in {
@@ -389,11 +362,89 @@ class HistoricalIngestionService:
                 self.store.transition_date(job_id, day, DateState.FAILED, safe_message)
             raise
 
-    def run(self, job_id):
+    def import_csv(self, job_id, day, content):
+        if self.store.pause_requested(job_id):
+            raise HistoricalMarketError('일시중지된 작업에는 CSV를 가져올 수 없습니다.')
+        current = self.store.date_state(job_id, day)
+        if current not in {
+            DateState.PENDING, DateState.FAILED,
+            DateState.QUARANTINED, DateState.CALENDAR_UNRESOLVED,
+        }:
+            raise HistoricalMarketError(f'{current.value} 상태에는 CSV를 가져올 수 없습니다.')
+        self.store.transition_date(job_id, day, DateState.DOWNLOADING)
+        try:
+            from quantdesk.historical_market_source import OfficialCsvSource
+            result = OfficialCsvSource().from_bytes(day, content)
+            return self._ingest_result(job_id, day, result)
+        except Exception as exc:
+            current = self.store.date_state(job_id, day)
+            if current in {DateState.DOWNLOADING, DateState.DOWNLOADED, DateState.PARSED}:
+                self.store.transition_date(job_id, day, DateState.FAILED, str(exc))
+            raise
+
+    def _ingest_result(self, job_id, day, result):
+        previous = self.store.raw_versions(day)
+        archived = self.archive.store(result)
+        raw_id = self.store.record_raw_version(archived, result.safe_metadata)
+        self.store.transition_date(job_id, day, DateState.DOWNLOADED)
+
+        if result.safe_metadata.get('non_session_candidate'):
+            attempts = int(self.store.job_dates(job_id).set_index('trade_date').loc[day, 'attempts'])
+            target = DateState.CALENDAR_UNRESOLVED if attempts >= self.max_attempts else DateState.FAILED
+            self.store.transition_date(job_id, day, target, '공식 자료가 없어 거래일 여부를 확인해야 합니다.')
+            return {'trade_date': day, 'state': target.value}
+
+        from quantdesk.historical_market_source import decode_source_result
+        source_frame = decode_source_result(result)
+        normalized = normalize_daily_market(source_frame, day)
+        self.store.transition_date(job_id, day, DateState.PARSED)
+        changed = not previous.empty and archived.sha256 not in set(previous.sha256)
+        findings = validate_daily_market(
+            normalized,
+            day,
+            prior_summaries=self.store.prior_summaries(day),
+            changed_checksum=changed,
+        )
+        self.store.save_findings(raw_id, findings)
+        if any(item.severity == 'quarantine' for item in findings):
+            self.store.transition_date(job_id, day, DateState.QUARANTINED, '검증 경고로 격리되었습니다.')
+            return {'trade_date': day, 'state': DateState.QUARANTINED.value}
+        self.store.transition_date(job_id, day, DateState.VALIDATED)
+        self.store.promote_day(job_id, day, raw_id, normalized)
+        return {'trade_date': day, 'state': DateState.PROMOTED.value}
+
+    def run(self, job_id, on_step=None):
+        from quantdesk.historical_market_source import (
+            SourceAuthenticationError,
+            SourceProviderError,
+            SourceQuotaError,
+            SourceRateLimitError,
+            SourceTimeoutError,
+        )
         results = []
         while not self.store.pause_requested(job_id):
-            result = self.process_next(job_id)
+            if on_step:
+                on_step()
+            try:
+                result = self.process_next(job_id)
+            except (SourceAuthenticationError, SourceQuotaError):
+                raise
+            except (SourceProviderError, SourceRateLimitError, SourceTimeoutError):
+                dates = self.store.job_dates(job_id)
+                failed = dates[dates.state == DateState.FAILED.value]
+                if failed.empty:
+                    raise
+                attempts = int(failed.iloc[0].attempts)
+                if attempts < self.max_attempts:
+                    self.sleeper(attempts)
+                    continue
+                continue
             if result is None:
                 break
             results.append(result)
+            if result['state'] == DateState.FAILED.value:
+                attempts = int(
+                    self.store.job_dates(job_id).set_index('trade_date').loc[result['trade_date'], 'attempts']
+                )
+                self.sleeper(attempts)
         return results

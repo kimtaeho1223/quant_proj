@@ -9,6 +9,7 @@ from quantdesk.historical_market import (
     RawArchive,
 )
 from quantdesk.historical_market_source import OfficialCsvSource
+from quantdesk.historical_market_source import SourceProviderError
 from quantdesk.historical_market_store import HistoricalMarketStore
 
 
@@ -107,6 +108,30 @@ class HistoricalMarketIngestionTests(unittest.TestCase):
         service.resume(job_id)
         service.process_next(job_id)
         self.assertEqual(self.store.date_state(job_id, '2026-09-25'), DateState.PROMOTED)
+
+    def test_official_csv_import_uses_the_same_promotion_pipeline(self):
+        service = HistoricalIngestionService(self.store, self.archive, source=None)
+        job_id = service.create_job('2026-09-25', '2026-09-25', source_mode='csv')
+
+        result = service.import_csv(job_id, '2026-09-25', csv_bytes())
+
+        self.assertEqual(result['state'], DateState.PROMOTED.value)
+        self.assertEqual(len(self.store.canonical_day('2026-09-25')), 2)
+        self.assertEqual(self.store.raw_versions('2026-09-25').source_type.tolist(), ['official_csv'])
+
+    def test_run_retries_temporary_provider_failure_then_resumes(self):
+        waits = []
+        source = FakeSource([SourceProviderError('temporary outage'), self.result()])
+        service = HistoricalIngestionService(
+            self.store, self.archive, source, service_key='key', sleeper=waits.append,
+        )
+        job_id = service.create_job('2026-09-25', '2026-09-25')
+
+        service.run(job_id)
+
+        self.assertEqual(self.store.date_state(job_id, '2026-09-25'), DateState.PROMOTED)
+        self.assertEqual(len(source.calls), 2)
+        self.assertEqual(waits, [1])
 
 
 if __name__ == '__main__':

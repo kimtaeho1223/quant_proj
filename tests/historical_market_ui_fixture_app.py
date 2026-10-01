@@ -1,0 +1,17 @@
+import os
+
+import streamlit as st
+
+from quantdesk.historical_market_ui import render_historical_market
+
+
+def fake_launcher(job_id, db_path, raw_root, service_key):
+    st.session_state['launched_job'] = job_id
+    st.session_state['launch_key_length'] = len(service_key)
+
+
+render_historical_market(
+    os.environ['QUANTDESK_MARKET_DB'],
+    os.environ['QUANTDESK_RAW_ROOT'],
+    launcher=fake_launcher,
+)

@@ -90,6 +90,20 @@ class HistoricalMarketStore:
                 [(job_id, day, DateState.PENDING.value, now) for day in unique_dates])
         return job_id
 
+    def latest_job(self):
+        with self.connect() as db:
+            row = db.execute('''SELECT id,start_date,end_date,source_mode,state,pause_requested,
+                worker_token,heartbeat,created,updated FROM historical_jobs ORDER BY id DESC LIMIT 1''').fetchone()
+        if not row:
+            return None
+        keys = [
+            'id', 'start_date', 'end_date', 'source_mode', 'state', 'pause_requested',
+            'worker_token', 'heartbeat', 'created', 'updated',
+        ]
+        result = dict(zip(keys, row))
+        result['pause_requested'] = bool(result['pause_requested'])
+        return result
+
     def transition_date(self, job_id, trade_date, target, message=''):
         target = DateState(target)
         now = self._now()
