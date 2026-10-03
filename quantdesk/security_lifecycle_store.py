@@ -1,0 +1,307 @@
+"""Transactional SQLite storage for official security lifecycles."""
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+
+from quantdesk.security_lifecycle import lifecycle_fingerprint
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _clean(value):
+    if pd.isna(value):
+        return None
+    return value.item() if hasattr(value, 'item') else value
+
+
+class SecurityLifecycleStore:
+    SCHEMA_VERSION = 1
+
+    def __init__(self, path, promotion_hook=None):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.promotion_hook = promotion_hook
+        with self.connect() as db:
+            db.executescript('''
+                CREATE TABLE IF NOT EXISTS lifecycle_schema (
+                    id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO lifecycle_schema VALUES(1, 1);
+                CREATE TABLE IF NOT EXISTS lifecycle_raw_versions (
+                    id INTEGER PRIMARY KEY, dataset TEXT NOT NULL,
+                    scope_start TEXT, scope_end TEXT, sha256 TEXT NOT NULL,
+                    path TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    parser_version TEXT NOT NULL, metadata_json TEXT NOT NULL,
+                    UNIQUE(dataset,scope_start,scope_end,sha256)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_source_rows (
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(raw_version_id,source_row_number),
+                    FOREIGN KEY(raw_version_id) REFERENCES lifecycle_raw_versions(id)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_source_selections (
+                    dataset TEXT PRIMARY KEY, raw_version_id INTEGER NOT NULL,
+                    evidence TEXT NOT NULL, selected_at TEXT NOT NULL,
+                    FOREIGN KEY(raw_version_id) REFERENCES lifecycle_raw_versions(id)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_model_meta (
+                    id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL,
+                    fingerprint TEXT NOT NULL, source_selection_json TEXT NOT NULL,
+                    promoted_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_issuers (
+                    issuer_id TEXT PRIMARY KEY, official_reference TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_securities (
+                    security_id TEXT PRIMARY KEY, issuer_id TEXT,
+                    standard_code TEXT NOT NULL, security_kind TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_identifiers (
+                    security_id TEXT NOT NULL, standard_code TEXT NOT NULL,
+                    short_code TEXT NOT NULL, valid_from TEXT NOT NULL, valid_to TEXT,
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL,
+                    PRIMARY KEY(security_id,short_code,valid_from)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_names (
+                    security_id TEXT NOT NULL, name TEXT NOT NULL,
+                    valid_from TEXT NOT NULL, valid_to TEXT,
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL,
+                    PRIMARY KEY(security_id,valid_from)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_events (
+                    security_id TEXT NOT NULL, event_type TEXT NOT NULL,
+                    effective_date TEXT NOT NULL, last_trading_date TEXT,
+                    successor_standard_code TEXT, raw_version_id INTEGER NOT NULL,
+                    source_row_number INTEGER NOT NULL,
+                    PRIMARY KEY(security_id,event_type,effective_date)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_lineage (
+                    predecessor_security_id TEXT NOT NULL, successor_security_id TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL, effective_date TEXT NOT NULL,
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL,
+                    PRIMARY KEY(predecessor_security_id,successor_security_id,relationship_type,effective_date)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_intervals (
+                    security_id TEXT NOT NULL, issuer_id TEXT, standard_code TEXT NOT NULL,
+                    short_code TEXT NOT NULL, name TEXT NOT NULL, market TEXT NOT NULL,
+                    security_kind TEXT NOT NULL, raw_version_id INTEGER NOT NULL,
+                    source_row_number INTEGER NOT NULL, valid_from TEXT NOT NULL, valid_to TEXT,
+                    PRIMARY KEY(security_id,valid_from)
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_findings (
+                    id INTEGER PRIMARY KEY, model_revision INTEGER NOT NULL,
+                    severity TEXT NOT NULL, rule_id TEXT NOT NULL, message TEXT NOT NULL,
+                    security_id TEXT, effective_date TEXT, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_rebuilds (
+                    id INTEGER PRIMARY KEY, parser_version TEXT NOT NULL,
+                    rules_version TEXT NOT NULL, source_selection_json TEXT NOT NULL,
+                    expected_fingerprint TEXT, actual_fingerprint TEXT,
+                    status TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+            ''')
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.path)
+        db.execute('PRAGMA foreign_keys=ON')
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def record_raw_version(self, archived, metadata, parser_version):
+        with self.connect() as db:
+            db.execute('''INSERT OR IGNORE INTO lifecycle_raw_versions
+                (dataset,scope_start,scope_end,sha256,path,fetched_at,parser_version,metadata_json)
+                VALUES(?,?,?,?,?,?,?,?)''', (
+                archived.dataset, archived.scope_start, archived.scope_end,
+                archived.sha256, str(archived.path), archived.fetched_at,
+                str(parser_version), json.dumps(dict(metadata or {}), ensure_ascii=False, sort_keys=True),
+            ))
+            row = db.execute('''SELECT id FROM lifecycle_raw_versions
+                WHERE dataset=? AND scope_start IS ? AND scope_end IS ? AND sha256=?''', (
+                archived.dataset, archived.scope_start, archived.scope_end, archived.sha256,
+            )).fetchone()
+        return int(row[0])
+
+    def raw_versions(self, dataset=None):
+        query = 'SELECT * FROM lifecycle_raw_versions'
+        params = ()
+        if dataset:
+            query += ' WHERE dataset=?'
+            params = (dataset,)
+        query += ' ORDER BY id'
+        with self.connect() as db:
+            return pd.read_sql_query(query, db, params=params)
+
+    def save_source_rows(self, raw_version_id, rows):
+        records = []
+        for index, row in rows.reset_index(drop=True).iterrows():
+            payload = {key: _clean(value) for key, value in row.to_dict().items()}
+            payload['raw_version_id'] = int(raw_version_id)
+            payload['source_row_number'] = int(payload.get('source_row_number') or index + 1)
+            records.append((
+                int(raw_version_id), payload['source_row_number'],
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            ))
+        with self.connect() as db:
+            db.execute('DELETE FROM lifecycle_source_rows WHERE raw_version_id=?', (raw_version_id,))
+            db.executemany('INSERT INTO lifecycle_source_rows VALUES(?,?,?)', records)
+
+    def source_rows(self, raw_version_id):
+        with self.connect() as db:
+            rows = db.execute('''SELECT payload_json FROM lifecycle_source_rows
+                WHERE raw_version_id=? ORDER BY source_row_number''', (raw_version_id,)).fetchall()
+        return pd.DataFrame([json.loads(row[0]) for row in rows])
+
+    def select_raw_version(self, dataset, raw_version_id, evidence):
+        evidence = str(evidence).strip()
+        if not evidence:
+            raise ValueError('원본 선택에는 공식 근거가 필요합니다.')
+        with self.connect() as db:
+            row = db.execute(
+                'SELECT dataset FROM lifecycle_raw_versions WHERE id=?', (raw_version_id,),
+            ).fetchone()
+            if not row or row[0] != dataset:
+                raise ValueError('선택한 원본이 자료 종류와 일치하지 않습니다.')
+            db.execute('''INSERT OR REPLACE INTO lifecycle_source_selections
+                VALUES(?,?,?,?)''', (dataset, raw_version_id, evidence, _now()))
+
+    def source_selection(self):
+        with self.connect() as db:
+            rows = db.execute('''SELECT dataset,raw_version_id FROM lifecycle_source_selections
+                ORDER BY dataset''').fetchall()
+        return {dataset: int(raw_id) for dataset, raw_id in rows}
+
+    def selected_source_rows(self):
+        frames = [self.source_rows(raw_id) for raw_id in self.source_selection().values()]
+        frames = [frame for frame in frames if not frame.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def _insert_frame(self, db, table, frame):
+        if frame.empty:
+            return
+        columns = frame.columns.tolist()
+        placeholders = ','.join('?' for _ in columns)
+        rows = [tuple(_clean(value) for value in row) for row in frame.itertuples(index=False, name=None)]
+        db.executemany(
+            f'INSERT INTO {table} ({",".join(columns)}) VALUES({placeholders})', rows,
+        )
+
+    def promote_model(self, model, source_selection):
+        fingerprint = lifecycle_fingerprint(model)
+        with self.connect() as db:
+            previous = db.execute('SELECT revision FROM lifecycle_model_meta WHERE id=1').fetchone()
+            revision = (int(previous[0]) if previous else 0) + 1
+            for table in [
+                'lifecycle_issuers', 'lifecycle_securities', 'lifecycle_identifiers',
+                'lifecycle_names', 'lifecycle_events', 'lifecycle_lineage',
+                'lifecycle_intervals', 'lifecycle_findings',
+            ]:
+                db.execute(f'DELETE FROM {table}')
+            self._insert_frame(db, 'lifecycle_issuers', model.issuers)
+            self._insert_frame(db, 'lifecycle_securities', model.securities)
+            if self.promotion_hook:
+                self.promotion_hook('after_identities')
+            self._insert_frame(db, 'lifecycle_identifiers', model.identifiers)
+            self._insert_frame(db, 'lifecycle_names', model.names)
+            self._insert_frame(db, 'lifecycle_events', model.events)
+            self._insert_frame(db, 'lifecycle_lineage', model.lineage)
+            self._insert_frame(db, 'lifecycle_intervals', model.intervals)
+            finding_rows = [(
+                revision, item.severity, item.rule_id, item.message,
+                item.security_id, item.effective_date, _now(),
+            ) for item in model.findings]
+            if finding_rows:
+                db.executemany('''INSERT INTO lifecycle_findings
+                    (model_revision,severity,rule_id,message,security_id,effective_date,created_at)
+                    VALUES(?,?,?,?,?,?,?)''', finding_rows)
+            db.execute('''INSERT OR REPLACE INTO lifecycle_model_meta
+                VALUES(1,?,?,?,?)''', (
+                revision, fingerprint,
+                json.dumps(dict(source_selection), ensure_ascii=False, sort_keys=True), _now(),
+            ))
+        return revision
+
+    def current_fingerprint(self):
+        with self.connect() as db:
+            row = db.execute('SELECT fingerprint FROM lifecycle_model_meta WHERE id=1').fetchone()
+        return row[0] if row else None
+
+    def listed_securities(self, as_of_date):
+        day = pd.Timestamp(as_of_date).date().isoformat()
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT security_id,issuer_id,standard_code,short_code,
+                name,market,security_kind,valid_from,valid_to,raw_version_id,source_row_number
+                FROM lifecycle_intervals
+                WHERE valid_from<=? AND (valid_to IS NULL OR valid_to>?)
+                ORDER BY market,short_code''', db, params=(day, day))
+
+    def lifecycle_timeline(self, security_id):
+        with self.connect() as db:
+            events = pd.read_sql_query('''SELECT * FROM lifecycle_events
+                WHERE security_id=? ORDER BY effective_date,event_type''', db, params=(security_id,))
+            intervals = pd.read_sql_query('''SELECT * FROM lifecycle_intervals
+                WHERE security_id=? ORDER BY valid_from''', db, params=(security_id,))
+        return {
+            'events': events.where(pd.notna(events), None).to_dict(orient='records'),
+            'intervals': intervals.where(pd.notna(intervals), None).to_dict(orient='records'),
+        }
+
+    def readiness(self, start_date, end_date):
+        reasons = []
+        required = {'security_master', 'new_listings', 'delistings', 'identifier_changes'}
+        selected = self.source_selection()
+        missing = sorted(required - set(selected))
+        if missing:
+            reasons.append(f'선택되지 않은 공식 자료: {", ".join(missing)}')
+        versions = self.raw_versions()
+        if not versions.empty:
+            latest = versions.groupby('dataset').id.max().to_dict()
+            if any(selected.get(dataset) != int(raw_id) for dataset, raw_id in latest.items()):
+                reasons.append('검토되지 않은 원본 버전이 있습니다.')
+        with self.connect() as db:
+            meta = db.execute('SELECT revision,fingerprint FROM lifecycle_model_meta WHERE id=1').fetchone()
+            blocking = db.execute('''SELECT COUNT(*) FROM lifecycle_findings
+                WHERE severity IN ('blocking','quarantine')''').fetchone()[0]
+        if not meta:
+            reasons.append('승격된 생애주기 모델이 없습니다.')
+        if blocking:
+            reasons.append(f'해결되지 않은 차단 항목 {blocking}건이 있습니다.')
+        return {
+            'lifecycle_ready': not reasons,
+            'blocking_reasons': reasons,
+            'fingerprint': meta[1] if meta else None,
+            'model_revision': int(meta[0]) if meta else None,
+            'start_date': pd.Timestamp(start_date).date().isoformat(),
+            'end_date': pd.Timestamp(end_date).date().isoformat(),
+            'daily_coverage': None,
+            'unresolved_dates': [],
+            'corporate_action_pending': False,
+        }
+
+    def record_rebuild(self, parser_version, rules_version, source_selection,
+                       expected_fingerprint, actual_fingerprint, status, message):
+        with self.connect() as db:
+            cursor = db.execute('''INSERT INTO lifecycle_rebuilds
+                (parser_version,rules_version,source_selection_json,expected_fingerprint,
+                 actual_fingerprint,status,message,created_at) VALUES(?,?,?,?,?,?,?,?)''', (
+                str(parser_version), str(rules_version),
+                json.dumps(dict(source_selection), ensure_ascii=False, sort_keys=True),
+                expected_fingerprint, actual_fingerprint, status, str(message), _now(),
+            ))
+            return int(cursor.lastrowid)
+
+    def rebuilds(self):
+        with self.connect() as db:
+            return pd.read_sql_query('SELECT * FROM lifecycle_rebuilds ORDER BY id', db)
