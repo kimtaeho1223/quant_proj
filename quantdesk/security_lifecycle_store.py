@@ -107,6 +107,19 @@ class SecurityLifecycleStore:
                     expected_fingerprint TEXT, actual_fingerprint TEXT,
                     status TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS lifecycle_reconciliation_runs (
+                    id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                    daily_coverage REAL NOT NULL, unresolved_dates_json TEXT NOT NULL,
+                    corporate_action_pending INTEGER NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lifecycle_reconciliation_findings (
+                    id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL,
+                    severity TEXT NOT NULL, rule_id TEXT NOT NULL, message TEXT NOT NULL,
+                    security_id TEXT, effective_date TEXT,
+                    lifecycle_raw_version_id INTEGER, market_raw_version_id INTEGER,
+                    lifecycle_value TEXT, market_value TEXT,
+                    FOREIGN KEY(run_id) REFERENCES lifecycle_reconciliation_runs(id)
+                );
             ''')
 
     @contextmanager
@@ -274,10 +287,23 @@ class SecurityLifecycleStore:
             meta = db.execute('SELECT revision,fingerprint FROM lifecycle_model_meta WHERE id=1').fetchone()
             blocking = db.execute('''SELECT COUNT(*) FROM lifecycle_findings
                 WHERE severity IN ('blocking','quarantine')''').fetchone()[0]
+            reconciliation = db.execute('''SELECT daily_coverage,unresolved_dates_json,
+                corporate_action_pending FROM lifecycle_reconciliation_runs
+                WHERE start_date=? AND end_date=? ORDER BY id DESC LIMIT 1''', (
+                pd.Timestamp(start_date).date().isoformat(),
+                pd.Timestamp(end_date).date().isoformat(),
+            )).fetchone()
         if not meta:
             reasons.append('승격된 생애주기 모델이 없습니다.')
         if blocking:
             reasons.append(f'해결되지 않은 차단 항목 {blocking}건이 있습니다.')
+        daily_coverage = reconciliation[0] if reconciliation else None
+        unresolved_dates = json.loads(reconciliation[1]) if reconciliation else []
+        corporate_action_pending = bool(reconciliation[2]) if reconciliation else False
+        if unresolved_dates:
+            reasons.append(f'일별 시장 대조가 필요한 날짜 {len(unresolved_dates)}일이 있습니다.')
+        if corporate_action_pending:
+            reasons.append('기업행사 검토 신호가 남아 있습니다.')
         return {
             'lifecycle_ready': not reasons,
             'blocking_reasons': reasons,
@@ -285,10 +311,42 @@ class SecurityLifecycleStore:
             'model_revision': int(meta[0]) if meta else None,
             'start_date': pd.Timestamp(start_date).date().isoformat(),
             'end_date': pd.Timestamp(end_date).date().isoformat(),
-            'daily_coverage': None,
-            'unresolved_dates': [],
-            'corporate_action_pending': False,
+            'daily_coverage': daily_coverage,
+            'unresolved_dates': unresolved_dates,
+            'corporate_action_pending': corporate_action_pending,
         }
+
+    def save_reconciliation(self, start_date, end_date, findings, daily_coverage,
+                            unresolved_dates, corporate_action_pending):
+        with self.connect() as db:
+            cursor = db.execute('''INSERT INTO lifecycle_reconciliation_runs
+                (start_date,end_date,daily_coverage,unresolved_dates_json,
+                 corporate_action_pending,created_at) VALUES(?,?,?,?,?,?)''', (
+                start_date, end_date, float(daily_coverage),
+                json.dumps(list(unresolved_dates), ensure_ascii=False),
+                int(bool(corporate_action_pending)), _now(),
+            ))
+            run_id = int(cursor.lastrowid)
+            rows = [(
+                run_id, item.severity, item.rule_id, item.message,
+                item.security_id, item.effective_date,
+                item.lifecycle_raw_version_id, item.market_raw_version_id,
+                item.lifecycle_value, item.market_value,
+            ) for item in findings]
+            if rows:
+                db.executemany('''INSERT INTO lifecycle_reconciliation_findings
+                    (run_id,severity,rule_id,message,security_id,effective_date,
+                     lifecycle_raw_version_id,market_raw_version_id,lifecycle_value,market_value)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)''', rows)
+        return run_id
+
+    def reconciliation_findings(self, start_date, end_date):
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT f.* FROM lifecycle_reconciliation_findings f
+                JOIN lifecycle_reconciliation_runs r ON r.id=f.run_id
+                WHERE r.id=(SELECT id FROM lifecycle_reconciliation_runs
+                    WHERE start_date=? AND end_date=? ORDER BY id DESC LIMIT 1)
+                ORDER BY f.id''', db, params=(start_date, end_date))
 
     def record_rebuild(self, parser_version, rules_version, source_selection,
                        expected_fingerprint, actual_fingerprint, status, message):

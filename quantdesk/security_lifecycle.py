@@ -22,6 +22,10 @@ class LifecycleFinding:
     message: str
     security_id: str | None = None
     effective_date: str | None = None
+    lifecycle_raw_version_id: int | None = None
+    market_raw_version_id: int | None = None
+    lifecycle_value: str | None = None
+    market_value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,3 +312,113 @@ def lifecycle_fingerprint(model):
     )
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def reconcile_daily_market(store, start_date, end_date):
+    """Compare official lifecycle membership with canonical daily-market evidence."""
+    start = pd.Timestamp(start_date).date().isoformat()
+    end = pd.Timestamp(end_date).date().isoformat()
+    with store.connect() as db:
+        dates = [row[0] for row in db.execute(
+            '''SELECT DISTINCT trade_date FROM historical_raw_versions
+            WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date''', (start, end),
+        ).fetchall()]
+        market = pd.read_sql_query(
+            '''SELECT trade_date,code,name,market,close,volume,listed_shares,raw_version_id
+            FROM historical_daily_market WHERE trade_date BETWEEN ? AND ?
+            ORDER BY trade_date,code''', db, params=(start, end),
+        )
+
+    findings = []
+    unresolved_dates = set()
+    covered_dates = 0
+    for trade_date in dates:
+        day = market[market.trade_date.eq(trade_date)].copy()
+        if not day.empty:
+            covered_dates += 1
+        active = store.listed_securities(trade_date)
+        active_by_code = {
+            str(row.short_code).zfill(6): row for row in active.itertuples(index=False)
+        }
+        market_by_code = {
+            str(row.code).zfill(6): row for row in day.itertuples(index=False)
+        }
+        for code, row in market_by_code.items():
+            lifecycle = active_by_code.get(code)
+            if lifecycle is None:
+                findings.append(LifecycleFinding(
+                    'blocking', 'market_without_lifecycle',
+                    f'{trade_date} 시장 원본의 {code} 종목에 활성 생애주기가 없습니다.',
+                    effective_date=trade_date,
+                    market_raw_version_id=int(row.raw_version_id),
+                    market_value=f'{row.name}/{row.market}',
+                ))
+                unresolved_dates.add(trade_date)
+                continue
+            if str(lifecycle.name) != str(row.name):
+                findings.append(LifecycleFinding(
+                    'warning', 'name_conflict',
+                    f'{trade_date} {code}의 공식 명칭과 시장 명칭이 다릅니다.',
+                    lifecycle.security_id, trade_date,
+                    int(lifecycle.raw_version_id), int(row.raw_version_id),
+                    str(lifecycle.name), str(row.name),
+                ))
+                unresolved_dates.add(trade_date)
+            if str(lifecycle.market) != str(row.market):
+                findings.append(LifecycleFinding(
+                    'warning', 'market_conflict',
+                    f'{trade_date} {code}의 공식 시장과 일별 시장 값이 다릅니다.',
+                    lifecycle.security_id, trade_date,
+                    int(lifecycle.raw_version_id), int(row.raw_version_id),
+                    str(lifecycle.market), str(row.market),
+                ))
+                unresolved_dates.add(trade_date)
+        for code, lifecycle in active_by_code.items():
+            if code not in market_by_code:
+                findings.append(LifecycleFinding(
+                    'warning', 'active_security_missing',
+                    f'{trade_date} 활성 종목 {code}가 일별 시장 원본에 없습니다.',
+                    lifecycle.security_id, trade_date,
+                    int(lifecycle.raw_version_id), None,
+                    f'{lifecycle.name}/{lifecycle.market}', None,
+                ))
+                unresolved_dates.add(trade_date)
+
+    corporate_action_pending = False
+    if not market.empty:
+        for code, group in market.groupby('code', sort=True):
+            ordered = group.sort_values('trade_date')
+            previous = None
+            for row in ordered.itertuples(index=False):
+                if previous is not None:
+                    if previous.listed_shares > 0:
+                        share_change = abs(row.listed_shares - previous.listed_shares) / previous.listed_shares
+                        if share_change >= 0.20:
+                            corporate_action_pending = True
+                            findings.append(LifecycleFinding(
+                                'blocking', 'listed_shares_jump',
+                                f'{row.trade_date} {code} 상장주식수가 20% 이상 변했습니다.',
+                                effective_date=row.trade_date,
+                                market_raw_version_id=int(row.raw_version_id),
+                                lifecycle_value=str(previous.listed_shares),
+                                market_value=str(row.listed_shares),
+                            ))
+                    if previous.close > 0:
+                        close_ratio = row.close / previous.close
+                        if close_ratio < 0.5 or close_ratio > 2.0:
+                            corporate_action_pending = True
+                            findings.append(LifecycleFinding(
+                                'blocking', 'close_ratio_jump',
+                                f'{row.trade_date} {code} 종가 비율이 검토 범위를 벗어났습니다.',
+                                effective_date=row.trade_date,
+                                market_raw_version_id=int(row.raw_version_id),
+                                lifecycle_value=str(previous.close),
+                                market_value=str(row.close),
+                            ))
+                previous = row
+
+    coverage = covered_dates / len(dates) if dates else 0.0
+    store.save_reconciliation(
+        start, end, findings, coverage, sorted(unresolved_dates), corporate_action_pending,
+    )
+    return tuple(findings)
