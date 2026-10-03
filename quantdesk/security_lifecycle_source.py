@@ -169,7 +169,8 @@ class KrxLifecycleSource:
             raise LifecycleSourceError('지원하지 않는 KRX 생애주기 자료입니다.')
         bld, screen = _DATASET_QUERIES[dataset]
         data = {
-            'bld': bld, 'mktId': 'ALL', 'share': '1', 'csvxls_isNo': 'true',
+            'bld': bld, 'locale': 'ko_KR', 'mktId': 'ALL', 'segTpCd': 'ALL',
+            'share': '1',
             'strtDd': str(scope_start or '').replace('-', ''),
             'endDd': str(scope_end or '').replace('-', ''),
         }
@@ -181,7 +182,13 @@ class KrxLifecycleSource:
             response = self.session.post(
                 self.endpoint, data=data, headers=headers, timeout=self.timeout,
             )
+            if response.status_code == 400 and response.content.strip() == b'LOGOUT':
+                raise LifecycleSourceError(
+                    'KRX 자동 조회에 로그인 세션이 필요합니다. 공식 CSV를 내려받아 업로드하세요.'
+                )
             response.raise_for_status()
+        except LifecycleSourceError:
+            raise
         except Exception as exc:
             raise LifecycleSourceError('KRX 공식 자료를 내려받을 수 없습니다.') from exc
         content = bytes(response.content)

@@ -101,6 +101,26 @@ class SecurityLifecycleStoreTests(unittest.TestCase):
         self.assertEqual(record.rules_version, '3')
         self.assertIn('security_master', record.source_selection_json)
 
+    def test_manual_source_review_preserves_expected_event_interval_and_result(self):
+        review_id = self.store.record_manual_review(
+            source_url='https://data.krx.co.kr/official-screen',
+            retrieved_at='2026-10-03T10:00:00+00:00',
+            raw_sha256='a' * 64,
+            example_type='preferred_share',
+            expected_event='listing:2020-01-02',
+            derived_interval='2020-01-02..open',
+            reviewer_result='passed',
+            notes='공식 화면과 일치',
+        )
+
+        row = self.store.manual_reviews().iloc[-1]
+        self.assertEqual(row.id, review_id)
+        self.assertEqual(row.raw_sha256, 'a' * 64)
+        self.assertEqual(row.example_type, 'preferred_share')
+        self.assertEqual(row.expected_event, 'listing:2020-01-02')
+        self.assertEqual(row.derived_interval, '2020-01-02..open')
+        self.assertEqual(row.reviewer_result, 'passed')
+
 
 if __name__ == '__main__':
     unittest.main()

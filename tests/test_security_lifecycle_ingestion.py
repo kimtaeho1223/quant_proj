@@ -5,6 +5,7 @@ from pathlib import Path
 from quantdesk.security_lifecycle_ingestion import SecurityLifecycleIngestion
 from quantdesk.security_lifecycle_source import LifecycleRawArchive, LifecycleSourceResult
 from quantdesk.security_lifecycle_store import SecurityLifecycleStore
+from tests.security_lifecycle_fixtures import end_to_end_official_sources
 
 
 HEADER = (
@@ -159,6 +160,49 @@ class SecurityLifecycleIngestionTests(unittest.TestCase):
         record = self.store.rebuilds().iloc[-1]
         self.assertEqual(record.status, 'failed')
         self.assertIn('불일치', record.message)
+
+
+class SecurityLifecycleEndToEndTests(unittest.TestCase):
+    def test_official_sources_rebuild_to_same_historical_membership_and_fingerprint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = SecurityLifecycleStore(root / 'market.sqlite3')
+            ingestion = SecurityLifecycleIngestion(store, LifecycleRawArchive(root / 'raw'))
+            for source in end_to_end_official_sources().values():
+                ingestion.ingest(source)
+
+            first = ingestion.build_and_promote()
+
+            self.assertEqual(len(store.listed_securities('2019-12-31')), 0)
+            during = store.listed_securities('2023-06-01')
+            self.assertEqual(set(during.short_code), {'005930', '005935', '000120'})
+            self.assertEqual(int(during.groupby('issuer_id').size().max()), 2)
+            self.assertEqual(
+                set(store.listed_securities('2024-07-01').short_code),
+                {'005930', '005935'},
+            )
+            self.assertTrue(during.raw_version_id.notna().all())
+            self.assertTrue(during.source_row_number.notna().all())
+
+            with store.connect() as db:
+                for table in [
+                    'lifecycle_issuers', 'lifecycle_securities', 'lifecycle_identifiers',
+                    'lifecycle_names', 'lifecycle_events', 'lifecycle_lineage',
+                    'lifecycle_intervals', 'lifecycle_findings',
+                ]:
+                    db.execute(f'DELETE FROM {table}')
+            rebuilt = ingestion.build_and_promote()
+
+            self.assertEqual(rebuilt['fingerprint'], first['fingerprint'])
+            self.assertEqual(
+                set(store.listed_securities('2023-06-01').short_code),
+                {'005930', '005935', '000120'},
+            )
+            readiness = store.readiness('2020-01-01', '2026-12-31')
+            self.assertTrue(readiness['lifecycle_ready'])
+            self.assertFalse(readiness['investability_ready'])
+            self.assertFalse(readiness['corporate_action_ready'])
+            self.assertFalse(readiness['official_backtest_ready'])
 
 
 if __name__ == '__main__':

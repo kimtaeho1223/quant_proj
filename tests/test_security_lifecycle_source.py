@@ -84,6 +84,12 @@ class SecurityLifecycleSourceTests(unittest.TestCase):
             self.assertIn('official_screen', result.safe_metadata)
             self.assertTrue(session.calls[0][1]['bld'].startswith('dbms/'))
 
+    def test_krx_logout_response_explains_official_csv_fallback(self):
+        session = FakeSession(FakeResponse(b'LOGOUT', status_code=400))
+
+        with self.assertRaisesRegex(LifecycleSourceError, '공식 CSV'):
+            KrxLifecycleSource(session=session).fetch('security_master')
+
 
 if __name__ == '__main__':
     unittest.main()

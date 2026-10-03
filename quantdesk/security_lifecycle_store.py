@@ -120,6 +120,13 @@ class SecurityLifecycleStore:
                     lifecycle_value TEXT, market_value TEXT,
                     FOREIGN KEY(run_id) REFERENCES lifecycle_reconciliation_runs(id)
                 );
+                CREATE TABLE IF NOT EXISTS lifecycle_manual_reviews (
+                    id INTEGER PRIMARY KEY, source_url TEXT NOT NULL,
+                    retrieved_at TEXT NOT NULL, raw_sha256 TEXT NOT NULL,
+                    example_type TEXT NOT NULL, expected_event TEXT NOT NULL,
+                    derived_interval TEXT NOT NULL, reviewer_result TEXT NOT NULL,
+                    notes TEXT NOT NULL, created_at TEXT NOT NULL
+                );
             ''')
 
     @contextmanager
@@ -323,6 +330,9 @@ class SecurityLifecycleStore:
             'daily_coverage': daily_coverage,
             'unresolved_dates': unresolved_dates,
             'corporate_action_pending': corporate_action_pending,
+            'investability_ready': False,
+            'corporate_action_ready': False,
+            'official_backtest_ready': False,
         }
 
     def save_reconciliation(self, start_date, end_date, findings, daily_coverage,
@@ -372,3 +382,22 @@ class SecurityLifecycleStore:
     def rebuilds(self):
         with self.connect() as db:
             return pd.read_sql_query('SELECT * FROM lifecycle_rebuilds ORDER BY id', db)
+
+    def record_manual_review(self, source_url, retrieved_at, raw_sha256, example_type,
+                             expected_event, derived_interval, reviewer_result, notes=''):
+        with self.connect() as db:
+            cursor = db.execute('''INSERT INTO lifecycle_manual_reviews
+                (source_url,retrieved_at,raw_sha256,example_type,expected_event,
+                 derived_interval,reviewer_result,notes,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)''', (
+                str(source_url), str(retrieved_at), str(raw_sha256), str(example_type),
+                str(expected_event), str(derived_interval), str(reviewer_result),
+                str(notes), _now(),
+            ))
+            return int(cursor.lastrowid)
+
+    def manual_reviews(self):
+        with self.connect() as db:
+            return pd.read_sql_query(
+                'SELECT * FROM lifecycle_manual_reviews ORDER BY id', db,
+            )

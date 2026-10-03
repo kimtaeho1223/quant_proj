@@ -43,3 +43,36 @@ def normalized_lifecycle_rows():
              previous_market=None, successor_standard_code=None),
     ])
 
+
+def end_to_end_official_sources():
+    header = (
+        '표준코드,단축코드,한글 종목명,시장구분,증권구분,주식종류,상장일,'
+        '최종매매일,상장폐지일,회사코드,변경구분,변경일,이전종목코드,'
+        '이전종목명,이전시장,승계표준코드\n'
+    )
+    rows = {
+        'security_master': [
+            'KR7005930003,005930,삼성전자,KOSPI,주권,보통주,2020-01-02,,,C001,,,,,,',
+            'KR7005931001,005935,삼성전자우,KOSPI,주권,우선주,2020-01-02,,,C001,,,,,,',
+        ],
+        'new_listings': [
+            'KR7005930003,005930,삼성전자,KOSPI,주권,보통주,2020-01-02,,,C001,,,,,,',
+        ],
+        'delistings': [
+            'KR7000120006,000120,과거종목,KOSPI,주권,보통주,2020-01-02,2024-06-27,2024-07-01,C002,,,,,,',
+        ],
+        'identifier_changes': [
+            'KR7005931001,005935,삼성전자우,KOSPI,주권,우선주,2020-01-02,,,C001,name_change,2022-01-03,005935,삼성전자1우,KOSPI,',
+        ],
+    }
+    return {
+        dataset: LifecycleSourceResult(
+            dataset=dataset,
+            scope_start='2020-01-01',
+            scope_end='2026-12-31',
+            content=(header + '\n'.join(dataset_rows) + '\n').encode('utf-8-sig'),
+            metadata={'provider': 'KRX', 'source_url': 'https://data.krx.co.kr/official'},
+        )
+        for dataset, dataset_rows in rows.items()
+    }
+
