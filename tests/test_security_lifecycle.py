@@ -59,6 +59,14 @@ class SecurityLifecycleTests(unittest.TestCase):
         self.assertEqual(len(same_issuer.security_id.unique()), 2)
         self.assertEqual(len(same_issuer.issuer_id.unique()), 1)
 
+    def test_identity_tables_retain_raw_version_and_source_row_evidence(self):
+        model = build_lifecycle_model(normalized_lifecycle_rows())
+
+        for frame in (model.issuers, model.securities):
+            self.assertTrue({'raw_version_id', 'source_row_number'} <= set(frame.columns))
+            self.assertTrue(frame.raw_version_id.notna().all())
+            self.assertTrue(frame.source_row_number.notna().all())
+
     def test_last_trading_date_is_not_inferred_from_delisting_date(self):
         rows = normalized_lifecycle_rows()
         rows.loc[2, 'last_trading_date'] = None

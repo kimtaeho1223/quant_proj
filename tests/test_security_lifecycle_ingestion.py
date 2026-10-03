@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from quantdesk.security_lifecycle_ingestion import SecurityLifecycleIngestion
 from quantdesk.security_lifecycle_source import LifecycleRawArchive, LifecycleSourceResult
@@ -157,6 +159,26 @@ class SecurityLifecycleIngestionTests(unittest.TestCase):
         self.assertEqual(rebuilt['status'], 'failed')
         self.assertNotEqual(rebuilt['actual_fingerprint'], promoted['fingerprint'])
         self.assertEqual(self.store.current_fingerprint(), promoted['fingerprint'])
+
+    def test_build_verifies_rebuild_before_replacing_the_previous_model(self):
+        self.ingest_all()
+        promoted = self.ingestion.build_and_promote()
+        candidate, selected = self.ingestion._selected_model()
+        candidate = deepcopy(candidate)
+        candidate.intervals.loc[0, 'name'] = '새 후보 모델'
+        mismatched = deepcopy(candidate)
+        mismatched.intervals.loc[0, 'name'] = '결정론 불일치'
+
+        with patch.object(
+            self.ingestion,
+            '_selected_model',
+            side_effect=[(candidate, selected), (mismatched, selected)],
+        ):
+            with self.assertRaisesRegex(RuntimeError, '재빌드 지문'):
+                self.ingestion.build_and_promote()
+
+        self.assertEqual(self.store.current_fingerprint(), promoted['fingerprint'])
+        self.assertEqual(self.store.rebuilds().iloc[-1].status, 'failed')
         record = self.store.rebuilds().iloc[-1]
         self.assertEqual(record.status, 'failed')
         self.assertIn('불일치', record.message)

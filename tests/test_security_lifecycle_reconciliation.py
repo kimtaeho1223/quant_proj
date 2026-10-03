@@ -4,6 +4,7 @@ from pathlib import Path
 
 from quantdesk.historical_market_store import HistoricalMarketStore
 from quantdesk.security_lifecycle import build_lifecycle_model, reconcile_daily_market
+from quantdesk.security_lifecycle_source import LifecycleArchivedRaw
 from quantdesk.security_lifecycle_store import SecurityLifecycleStore
 from tests.security_lifecycle_fixtures import normalized_lifecycle_rows
 
@@ -15,8 +16,19 @@ class SecurityLifecycleReconciliationTests(unittest.TestCase):
         HistoricalMarketStore(self.path)
         self.store = SecurityLifecycleStore(self.path)
         rows = normalized_lifecycle_rows().iloc[[0]].copy()
+        raw_id = self.store.record_raw_version(
+            LifecycleArchivedRaw(
+                'security_master', None, None, 'a' * 64,
+                Path(self.temporary.name) / 'master.csv.gz',
+                '2026-10-03T00:00:00+00:00',
+            ),
+            {},
+            '1',
+        )
+        self.store.save_source_rows(raw_id, rows)
+        self.store.select_raw_version('security_master', raw_id, 'fixture')
         self.model = build_lifecycle_model(rows)
-        self.store.promote_model(self.model, {'security_master': 1})
+        self.store.promote_model(self.model, {'security_master': raw_id})
 
     def tearDown(self):
         self.temporary.cleanup()

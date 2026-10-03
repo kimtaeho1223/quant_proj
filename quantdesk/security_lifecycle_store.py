@@ -58,11 +58,13 @@ class SecurityLifecycleStore:
                     promoted_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS lifecycle_issuers (
-                    issuer_id TEXT PRIMARY KEY, official_reference TEXT NOT NULL
+                    issuer_id TEXT PRIMARY KEY, official_reference TEXT NOT NULL,
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS lifecycle_securities (
                     security_id TEXT PRIMARY KEY, issuer_id TEXT,
-                    standard_code TEXT NOT NULL, security_kind TEXT NOT NULL
+                    standard_code TEXT NOT NULL, security_kind TEXT NOT NULL,
+                    raw_version_id INTEGER NOT NULL, source_row_number INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS lifecycle_identifiers (
                     security_id TEXT NOT NULL, standard_code TEXT NOT NULL,
@@ -221,6 +223,28 @@ class SecurityLifecycleStore:
     def promote_model(self, model, source_selection):
         fingerprint = lifecycle_fingerprint(model)
         with self.connect() as db:
+            selected_ids = {int(value) for value in source_selection.values()}
+            evidence_rows = {
+                (int(raw_id), int(row_number))
+                for raw_id, row_number in db.execute(
+                    'SELECT raw_version_id,source_row_number FROM lifecycle_source_rows'
+                ).fetchall()
+            }
+            for name in [
+                'issuers', 'securities', 'identifiers', 'names',
+                'events', 'lineage', 'intervals',
+            ]:
+                frame = getattr(model, name)
+                if frame.empty:
+                    continue
+                if not {'raw_version_id', 'source_row_number'} <= set(frame.columns):
+                    raise ValueError(f'{name} 정체성 자료에 원본 행 근거가 없습니다.')
+                for raw_id, row_number in frame[
+                    ['raw_version_id', 'source_row_number']
+                ].itertuples(index=False, name=None):
+                    evidence = (int(raw_id), int(row_number))
+                    if int(raw_id) not in selected_ids or evidence not in evidence_rows:
+                        raise ValueError(f'{name} 정체성 자료의 원본 행 근거를 확인할 수 없습니다.')
             previous = db.execute('SELECT revision FROM lifecycle_model_meta WHERE id=1').fetchone()
             revision = (int(previous[0]) if previous else 0) + 1
             for table in [
@@ -300,9 +324,13 @@ class SecurityLifecycleStore:
             if any(selected.get(dataset) != int(raw_id) for dataset, raw_id in latest.items()):
                 reasons.append('검토되지 않은 원본 버전이 있습니다.')
         with self.connect() as db:
-            meta = db.execute('SELECT revision,fingerprint FROM lifecycle_model_meta WHERE id=1').fetchone()
+            meta = db.execute('''SELECT revision,fingerprint,source_selection_json
+                FROM lifecycle_model_meta WHERE id=1''').fetchone()
             blocking = db.execute('''SELECT COUNT(*) FROM lifecycle_findings
                 WHERE severity IN ('blocking','quarantine')''').fetchone()[0]
+            latest_rebuild = db.execute(
+                'SELECT status FROM lifecycle_rebuilds ORDER BY id DESC LIMIT 1'
+            ).fetchone()
             reconciliation = db.execute('''SELECT daily_coverage,unresolved_dates_json,
                 corporate_action_pending FROM lifecycle_reconciliation_runs
                 WHERE start_date=? AND end_date=? ORDER BY id DESC LIMIT 1''', (
@@ -311,6 +339,10 @@ class SecurityLifecycleStore:
             )).fetchone()
         if not meta:
             reasons.append('승격된 생애주기 모델이 없습니다.')
+        elif json.loads(meta[2]) != selected:
+            reasons.append('승격 모델과 선택 원본이 다릅니다.')
+        if latest_rebuild and latest_rebuild[0] == 'failed':
+            reasons.append('최근 재빌드 검증 실패가 해결되지 않았습니다.')
         if blocking:
             reasons.append(f'해결되지 않은 차단 항목 {blocking}건이 있습니다.')
         daily_coverage = reconciliation[0] if reconciliation else None

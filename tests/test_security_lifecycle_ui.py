@@ -114,6 +114,10 @@ class SecurityLifecycleUiTests(unittest.TestCase):
 
         messages = [item.value for item in self.app.error]
         self.assertTrue(any('불일치' in message for message in messages))
+        readiness = next(
+            metric for metric in self.app.metric if metric.label == '생애주기 준비'
+        )
+        self.assertEqual(readiness.value, '잠김')
 
     def test_existing_daily_collection_controls_still_work(self):
         self.assertEqual(self.app.button(key='historical_start').label, '전체시장 수집 시작')

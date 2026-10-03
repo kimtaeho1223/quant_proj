@@ -34,7 +34,7 @@ def normalized_lifecycle_rows():
              delisting_date=None, issuer_reference='C001', event_type='listing',
              effective_date='1975-06-11', previous_code=None, previous_name=None,
              previous_market=None, successor_standard_code=None),
-        dict(dataset='delistings', raw_version_id=2, source_row_number=1,
+        dict(dataset='delistings', raw_version_id=3, source_row_number=1,
              observed_at='2026-10-03T00:00:00+00:00', standard_code='KR7000120006',
              short_code='000120', name='과거종목', market='KOSPI', security_type='주권',
              stock_type='보통주', listing_date='2020-01-02', last_trading_date='2024-06-27',

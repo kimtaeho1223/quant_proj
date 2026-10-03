@@ -111,10 +111,47 @@ class SecurityLifecycleIngestion:
             rules = ', '.join(sorted({finding.rule_id for finding in blocking}))
             raise ValueError(f'차단 또는 격리 항목이 있어 승격할 수 없습니다: {rules}')
         fingerprint = lifecycle_fingerprint(model)
+        try:
+            verification_model, verification_selection = self._selected_model()
+            verification_fingerprint = lifecycle_fingerprint(verification_model)
+            deterministic = (
+                verification_selection == selected
+                and verification_fingerprint == fingerprint
+            )
+        except Exception as exc:
+            verification_fingerprint = None
+            deterministic = False
+            verification_error = str(exc)
+        else:
+            verification_error = ''
+
+        if not deterministic:
+            message = (
+                '승격 전 재빌드 지문이 후보 모델과 불일치합니다.'
+                if verification_fingerprint is not None
+                else f'승격 전 재빌드 실패: {verification_error}'
+            )
+            self.store.record_rebuild(
+                self.PARSER_VERSION,
+                self.RULES_VERSION,
+                selected,
+                fingerprint,
+                verification_fingerprint,
+                'failed',
+                message,
+            )
+            raise RuntimeError(message)
+
         revision = self.store.promote_model(model, selected)
-        rebuilt = self.rebuild()
-        if rebuilt['status'] != 'passed':
-            raise RuntimeError('승격 직후 결정론적 재빌드 지문이 일치하지 않습니다.')
+        self.store.record_rebuild(
+            self.PARSER_VERSION,
+            self.RULES_VERSION,
+            selected,
+            fingerprint,
+            verification_fingerprint,
+            'passed',
+            '승격 전 선택 원본 재빌드 지문이 일치합니다.',
+        )
         return {
             'status': 'promoted',
             'revision': revision,

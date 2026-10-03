@@ -169,16 +169,25 @@ def build_lifecycle_model(source_rows):
 
     for standard_code, group in rows.groupby('standard_code', sort=True):
         group = group.sort_values(['effective_date', 'raw_version_id', 'source_row_number'])
+        first = group.iloc[0]
         security_id = _stable_id('sec', standard_code)
         issuer_ref = next((x for x in group.issuer_reference if pd.notna(x) and x), None)
         issuer_id = _stable_id('iss', issuer_ref) if issuer_ref else None
         if issuer_ref:
-            issuer_records.append({'issuer_id': issuer_id, 'official_reference': issuer_ref})
+            issuer_row = group[group.issuer_reference.eq(issuer_ref)].iloc[0]
+            issuer_records.append({
+                'issuer_id': issuer_id,
+                'official_reference': issuer_ref,
+                'raw_version_id': int(issuer_row.raw_version_id),
+                'source_row_number': int(issuer_row.source_row_number),
+            })
         stock_type = next((x for x in reversed(group.stock_type.tolist()) if pd.notna(x)), None)
         kind = _classification(stock_type)
         security_records.append({
             'security_id': security_id, 'issuer_id': issuer_id,
             'standard_code': standard_code, 'security_kind': kind,
+            'raw_version_id': int(first.raw_version_id),
+            'source_row_number': int(first.source_row_number),
         })
         if kind == 'unknown':
             findings.append(LifecycleFinding(
@@ -198,7 +207,6 @@ def build_lifecycle_model(source_rows):
         listing_date = min(group.listing_date.dropna())
         delisting_values = group.delisting_date.dropna().tolist()
         delisting_date = min(delisting_values) if delisting_values else None
-        first = group.iloc[0]
         current = {
             'short_code': first.previous_code or first.short_code,
             'name': first.previous_name or first['name'],
@@ -272,7 +280,9 @@ def build_lifecycle_model(source_rows):
 
     securities = pd.DataFrame(security_records).drop_duplicates('security_id').sort_values('security_id')
     issuers = pd.DataFrame(issuer_records).drop_duplicates('issuer_id').sort_values('issuer_id') \
-        if issuer_records else _empty(['issuer_id', 'official_reference'])
+        if issuer_records else _empty([
+            'issuer_id', 'official_reference', 'raw_version_id', 'source_row_number',
+        ])
     intervals = intervals.sort_values(['security_id', 'valid_from']).reset_index(drop=True)
     identifiers = intervals[[
         'security_id', 'standard_code', 'short_code', 'valid_from', 'valid_to',
