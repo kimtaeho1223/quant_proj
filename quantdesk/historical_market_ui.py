@@ -10,6 +10,7 @@ import streamlit as st
 
 from quantdesk.historical_market import HistoricalIngestionService, RawArchive
 from quantdesk.historical_market_store import HistoricalMarketStore
+from quantdesk.security_lifecycle_ui import render_security_lifecycle
 
 
 def launch_historical_worker(job_id, db_path, raw_root, service_key):
@@ -34,7 +35,9 @@ def launch_historical_worker(job_id, db_path, raw_root, service_key):
     return subprocess.Popen(command, **options)
 
 
-def render_historical_market(db_path, raw_root, launcher=launch_historical_worker):
+def render_historical_market(
+    db_path, raw_root, lifecycle_raw_root=None, launcher=launch_historical_worker,
+):
     st.subheader('과거 시장 데이터')
     store = HistoricalMarketStore(db_path)
     api_key = st.text_input(
@@ -67,6 +70,9 @@ def render_historical_market(db_path, raw_root, launcher=launch_historical_worke
     if latest is None:
         st.info('아직 과거 전체시장 수집 작업이 없습니다.')
         st.warning('공식 백테스트 사용 불가: 과거 시장 자료 수집이 필요합니다.')
+        render_security_lifecycle(
+            db_path, lifecycle_raw_root or Path(raw_root).parent / 'lifecycle',
+        )
         return
 
     st.divider()
@@ -139,3 +145,6 @@ def render_historical_market(db_path, raw_root, launcher=launch_historical_worke
     else:
         st.info('일별 전체시장 원본 수집이 아직 완료되지 않았습니다.')
     st.warning('공식 백테스트 사용 불가: 종목 생애주기와 기업행사 검증 단계가 남아 있습니다.')
+    render_security_lifecycle(
+        db_path, lifecycle_raw_root or Path(raw_root).parent / 'lifecycle',
+    )

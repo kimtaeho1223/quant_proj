@@ -23,6 +23,10 @@ if page == '과거 시장 데이터':
     render_historical_market(
         os.environ.get('QUANTDESK_MARKET_DB', str(Path(__file__).parent / 'data' / 'market.db')),
         os.environ.get('QUANTDESK_RAW_ROOT', str(Path(__file__).parent / 'data' / 'raw' / 'krx' / 'daily')),
+        os.environ.get(
+            'QUANTDESK_LIFECYCLE_RAW_ROOT',
+            str(Path(__file__).parent / 'data' / 'raw' / 'krx' / 'lifecycle'),
+        ),
     )
     st.stop()
 if page == '백테스트':

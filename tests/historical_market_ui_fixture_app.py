@@ -13,5 +13,6 @@ def fake_launcher(job_id, db_path, raw_root, service_key):
 render_historical_market(
     os.environ['QUANTDESK_MARKET_DB'],
     os.environ['QUANTDESK_RAW_ROOT'],
+    lifecycle_raw_root=os.environ.get('QUANTDESK_LIFECYCLE_RAW_ROOT'),
     launcher=fake_launcher,
 )

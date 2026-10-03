@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 - 2026-10-03
+
+- Archive versioned official KRX security-master, listing, delisting, and identifier-change evidence.
+- Build deterministic issuer, security, event, identifier, name, and listed-membership intervals.
+- Require evidence-backed source revision selection and verify rebuild fingerprints before readiness.
+- Reconcile lifecycle membership with daily-market rows without inferring delisting from missing data.
+- Surface source checksums, timelines, conflicts, and separate readiness locks in Streamlit.
+- Keep investability, corporate-action, and official-backtest readiness locked in this increment.
+
 ## 0.5.0 - 2026-10-01
 
 - Add official Public Data Portal acquisition for daily full-market KOSPI and KOSDAQ data.

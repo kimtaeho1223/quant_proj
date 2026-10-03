@@ -14,12 +14,14 @@ class HistoricalMarketUiTests(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory()
         os.environ['QUANTDESK_MARKET_DB'] = str(Path(self.folder.name) / 'market.db')
         os.environ['QUANTDESK_RAW_ROOT'] = str(Path(self.folder.name) / 'raw')
+        os.environ['QUANTDESK_LIFECYCLE_RAW_ROOT'] = str(Path(self.folder.name) / 'lifecycle')
         fixture = Path(__file__).with_name('historical_market_ui_fixture_app.py')
         self.app = AppTest.from_file(str(fixture)).run(timeout=30)
 
     def tearDown(self):
         os.environ.pop('QUANTDESK_MARKET_DB', None)
         os.environ.pop('QUANTDESK_RAW_ROOT', None)
+        os.environ.pop('QUANTDESK_LIFECYCLE_RAW_ROOT', None)
         self.folder.cleanup()
 
     def test_start_requires_session_key_and_creates_persisted_job(self):
