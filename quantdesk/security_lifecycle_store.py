@@ -271,6 +271,15 @@ class SecurityLifecycleStore:
             'intervals': intervals.where(pd.notna(intervals), None).to_dict(orient='records'),
         }
 
+    def security_catalog(self):
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT i.security_id,i.short_code,i.name,i.market
+                FROM lifecycle_intervals i
+                JOIN (SELECT security_id,MAX(valid_from) AS valid_from
+                      FROM lifecycle_intervals GROUP BY security_id) latest
+                  ON latest.security_id=i.security_id AND latest.valid_from=i.valid_from
+                ORDER BY i.market,i.short_code''', db)
+
     def readiness(self, start_date, end_date):
         reasons = []
         required = {'security_master', 'new_listings', 'delistings', 'identifier_changes'}
