@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Archive KRX single-security management designation/release history separately from daily status.
+- Reconstruct event-derived status only on observed dates and compare disclosure dates in the audit UI.
+- Keep official-backtest readiness locked; event history alone does not establish full-market coverage or publication time.
+
 ## 0.7.0 - 2026-10-04
 
 - Archive versioned official KRX investability status and require evidence-backed revision selection.
