@@ -116,7 +116,23 @@ class InvestabilityStore:
                 CREATE TABLE IF NOT EXISTS investability_reconciliation_runs (
                     id INTEGER PRIMARY KEY, start_date TEXT NOT NULL,
                     end_date TEXT NOT NULL, status TEXT NOT NULL,
+                    source_model_fingerprint TEXT NOT NULL,
+                    lifecycle_fingerprint TEXT NOT NULL,
+                    market_raw_version TEXT NOT NULL,
+                    policy_fingerprint TEXT NOT NULL,
                     summary_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS investability_reconciliation_findings (
+                    run_id INTEGER NOT NULL, severity TEXT NOT NULL,
+                    rule_id TEXT NOT NULL, message TEXT NOT NULL,
+                    security_id TEXT, requested_date TEXT, evidence_id TEXT,
+                    FOREIGN KEY(run_id) REFERENCES investability_reconciliation_runs(id)
+                );
+                CREATE TABLE IF NOT EXISTS investability_reconciliation_dates (
+                    run_id INTEGER NOT NULL, date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    PRIMARY KEY(run_id,date),
+                    FOREIGN KEY(run_id) REFERENCES investability_reconciliation_runs(id)
                 );
                 CREATE TABLE IF NOT EXISTS investability_readiness_summaries (
                     id INTEGER PRIMARY KEY, start_date TEXT NOT NULL,
@@ -435,7 +451,21 @@ class InvestabilityStore:
                     OR selected.raw_version_id IS NULL
                 ORDER BY raw.requested_date
             ''', (start, end))]
+            reconciliation_dates = db.execute('''
+                SELECT dates.date,dates.status
+                FROM investability_reconciliation_dates AS dates
+                JOIN (
+                    SELECT date,MAX(run_id) AS run_id
+                    FROM investability_reconciliation_dates
+                    WHERE date BETWEEN ? AND ? GROUP BY date
+                ) AS latest
+                  ON latest.date=dates.date AND latest.run_id=dates.run_id
+                ORDER BY dates.date
+            ''', (start, end)).fetchall()
         unknown_dates = sorted(set(sessions) - coverage)
+        reconciliation_blocked_dates = [
+            day for day, status in reconciliation_dates if status != 'passed'
+        ]
         reasons = []
         codes = []
         if policy is None:
@@ -456,12 +486,18 @@ class InvestabilityStore:
         if rebuild and rebuild[0] == 'failed':
             reasons.append('최근 재빌드 검증 실패가 해결되지 않았습니다.')
             codes.append('rebuild_mismatch')
+        if reconciliation_blocked_dates:
+            reasons.append(
+                f'생애주기·시장 조정 실패 날짜가 {len(reconciliation_blocked_dates)}일 있습니다.'
+            )
+            codes.append('reconciliation_blocked')
         return {
             'investability_ready': not reasons,
             'blocking_reasons': reasons,
             'blocking_codes': codes,
             'unknown_dates': unknown_dates,
             'pending_revision_dates': pending_revisions,
+            'reconciliation_blocked_dates': reconciliation_blocked_dates,
             'start_date': start,
             'end_date': end,
             'policy_id': policy_id,
@@ -469,6 +505,61 @@ class InvestabilityStore:
             'corporate_action_ready': False,
             'official_backtest_ready': False,
         }
+
+    def record_reconciliation(self, start_date, end_date, results, findings,
+                              source_model_fingerprint, lifecycle_fingerprint,
+                              market_raw_version, policy_fingerprint):
+        start = pd.Timestamp(start_date).date().isoformat()
+        end = pd.Timestamp(end_date).date().isoformat()
+        blocking_by_date = {
+            item.requested_date for item in findings
+            if item.requested_date and item.severity in {'blocking', 'quarantine'}
+        }
+        result_dates = set(results.requested_date) if not results.empty else set()
+        unknown_by_date = set(
+            results.loc[results.state.eq('unknown'), 'requested_date']
+        ) if not results.empty else set()
+        dates = sorted(result_dates | {
+            item.requested_date for item in findings if item.requested_date
+        })
+        date_rows = []
+        for day in dates:
+            if day in blocking_by_date:
+                status = 'blocked'
+            elif day in unknown_by_date:
+                status = 'unknown'
+            else:
+                status = 'passed'
+            date_rows.append((day, status))
+        run_status = 'failed' if any(status != 'passed' for _, status in date_rows) else 'passed'
+        summary = {
+            'result_rows': int(len(results)),
+            'finding_count': len(findings),
+            'blocked_dates': [day for day, status in date_rows if status != 'passed'],
+        }
+        with self.connect() as db:
+            cursor = db.execute('''INSERT INTO investability_reconciliation_runs
+                (start_date,end_date,status,source_model_fingerprint,
+                 lifecycle_fingerprint,market_raw_version,policy_fingerprint,
+                 summary_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)''', (
+                start, end, run_status, str(source_model_fingerprint),
+                str(lifecycle_fingerprint), str(market_raw_version),
+                str(policy_fingerprint), _json(summary), _now(),
+            ))
+            run_id = int(cursor.lastrowid)
+            self._insert_records(
+                db, 'investability_reconciliation_findings',
+                [dict(run_id=run_id, **asdict(item)) for item in findings],
+                [
+                    'run_id', 'severity', 'rule_id', 'message', 'security_id',
+                    'requested_date', 'evidence_id',
+                ],
+            )
+            db.executemany('''INSERT INTO investability_reconciliation_dates
+                (run_id,date,status) VALUES(?,?,?)''', [
+                (run_id, day, status) for day, status in date_rows
+            ])
+        return run_id
 
     def record_rebuild(self, expected_fingerprint, actual_fingerprint, status, message):
         with self.connect() as db:

@@ -326,3 +326,111 @@ def decision_at(model: StatusModel, security_id: str, as_of_timestamp: str,
         model, policy, security_id, stamp, state, reasons,
         latest.evidence_id.tolist(),
     )
+
+
+def reconcile_investability(model: StatusModel, lifecycle_reader,
+                            daily_market: pd.DataFrame, start_date: str,
+                            end_date: str,
+                            policy: InvestabilityPolicy):
+    start = pd.Timestamp(start_date).date().isoformat()
+    end = pd.Timestamp(end_date).date().isoformat()
+    selected_days = [day for day in model.sessions if start <= day <= end]
+    market = daily_market.copy() if isinstance(daily_market, pd.DataFrame) else pd.DataFrame()
+    required_market = {'trade_date', 'code'}
+    if not market.empty and not required_market.issubset(market.columns):
+        missing = required_market - set(market.columns)
+        raise ValueError(f'일별 시장 필수 열이 없습니다: {", ".join(sorted(missing))}')
+    if not market.empty:
+        market['trade_date'] = pd.to_datetime(market.trade_date).dt.date.astype(str)
+        market['code'] = market.code.astype(str).str.zfill(6)
+        market = market[market.trade_date.between(start, end)].copy()
+
+    records = []
+    findings = []
+    listed_by_day = {}
+    for day in selected_days:
+        listed = _listed_for(lifecycle_reader, day).copy()
+        if not listed.empty:
+            listed['short_code'] = listed.short_code.astype(str).str.zfill(6)
+        listed_by_day[day] = listed
+        assertions = model.assertions[model.assertions.requested_date.eq(day)]
+        active_ids = set(listed.security_id) if not listed.empty else set()
+        for row in assertions.itertuples(index=False):
+            if row.security_id not in active_ids:
+                findings.append(StatusFinding(
+                    'blocking', 'status_outside_listing',
+                    '공식 상태가 유효한 상장 생애주기 밖에 있습니다.',
+                    row.security_id, day, row.evidence_id,
+                ))
+
+        eligible_listings = listed[
+            listed.market.isin(policy.allowed_markets)
+            & listed.security_kind.isin(policy.allowed_security_kinds)
+        ] if not listed.empty else listed
+        asserted_ids = set(assertions.security_id)
+        for identity in eligible_listings.itertuples(index=False):
+            if day not in model.coverage_dates or identity.security_id not in asserted_ids:
+                reason = 'missing_selected_daily_status'
+                records.append({
+                    'requested_date': day,
+                    'security_id': identity.security_id,
+                    'state': 'unknown',
+                    'reason_codes': (reason,),
+                    'evidence_ids': (),
+                })
+                findings.append(StatusFinding(
+                    'blocking', reason,
+                    '상장 종목의 선택된 공식 일별 상태가 없습니다.',
+                    identity.security_id, day,
+                ))
+                continue
+            decision = decision_at(
+                model, identity.security_id,
+                f'{day}T23:59:59+09:00', policy,
+            )
+            records.append({
+                'requested_date': day,
+                'security_id': identity.security_id,
+                'state': decision.state,
+                'reason_codes': decision.reason_codes,
+                'evidence_ids': decision.evidence_ids,
+            })
+
+    if not market.empty:
+        for row in market.itertuples(index=False):
+            listed = listed_by_day.get(row.trade_date)
+            matches = listed[
+                listed.short_code.eq(row.code)
+            ] if listed is not None and not listed.empty else pd.DataFrame()
+            if len(matches) != 1:
+                raw_version = getattr(row, 'raw_version_id', '')
+                findings.append(StatusFinding(
+                    'quarantine', 'market_without_lifecycle',
+                    '일별 시장 행을 하나의 상장 생애주기와 연결할 수 없습니다.',
+                    requested_date=row.trade_date,
+                    evidence_id=f'market:{raw_version}:{row.trade_date}:{row.code}',
+                ))
+
+        if 'close' in market:
+            ordered = market.sort_values(['code', 'trade_date'], kind='stable')
+            for code, group in ordered.groupby('code', sort=True):
+                previous = None
+                for row in group.itertuples(index=False):
+                    close = float(row.close)
+                    if previous not in (None, 0) and (close / previous < 0.5 or close / previous > 2.0):
+                        listed = listed_by_day.get(row.trade_date)
+                        matched = listed[
+                            listed.short_code.eq(code)
+                        ] if listed is not None and not listed.empty else pd.DataFrame()
+                        security_id = matched.iloc[0].security_id if len(matched) == 1 else None
+                        findings.append(StatusFinding(
+                            'warning', 'price_gap',
+                            '큰 가격 변동은 공식 상태를 대체하지 않으며 별도 확인이 필요합니다.',
+                            security_id, row.trade_date,
+                        ))
+                    previous = close
+
+    columns = [
+        'requested_date', 'security_id', 'state', 'reason_codes', 'evidence_ids',
+    ]
+    return pd.DataFrame(records, columns=columns), tuple(findings)

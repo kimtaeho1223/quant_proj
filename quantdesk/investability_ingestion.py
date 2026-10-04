@@ -10,6 +10,7 @@ from quantdesk.investability import (
     INVESTABILITY_V1,
     build_status_model,
     investability_fingerprint,
+    reconcile_investability,
 )
 from quantdesk.investability_source import (
     KRX_STATUS_ENDPOINT,
@@ -197,3 +198,22 @@ def rebuild_investability_model(store, lifecycle_reader,
             'actual_fingerprint': None,
             'message': str(exc),
         }
+
+
+def reconcile_investability_range(store, lifecycle_reader, daily_market,
+                                  start_date, end_date,
+                                  lifecycle_fingerprint,
+                                  market_raw_version,
+                                  policy=INVESTABILITY_V1):
+    model = store._model()
+    results, findings = reconcile_investability(
+        model, lifecycle_reader, daily_market, start_date, end_date, policy,
+    )
+    run_id = store.record_reconciliation(
+        start_date, end_date, results, findings,
+        source_model_fingerprint=store.current_fingerprint(),
+        lifecycle_fingerprint=lifecycle_fingerprint,
+        market_raw_version=market_raw_version,
+        policy_fingerprint=policy.fingerprint,
+    )
+    return {'run_id': run_id, 'results': results, 'findings': findings}
