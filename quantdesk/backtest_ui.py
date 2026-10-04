@@ -46,6 +46,29 @@ def _issue(source, message):
 
 def readiness_report(dataset, config):
     issues = []
+    adapter_readiness = dataset.investability_readiness(config.start, config.end)
+    readiness_labels = {
+        'lifecycle': None,
+        'investability': None,
+        'corporate_action': None,
+        'official_backtest': None,
+    }
+    if adapter_readiness is not None:
+        readiness_labels = {
+            'lifecycle': bool(adapter_readiness.get('lifecycle_ready', False)),
+            'investability': bool(adapter_readiness.get('investability_ready', False)),
+            'corporate_action': bool(adapter_readiness.get('corporate_action_ready', False)),
+            'official_backtest': bool(adapter_readiness.get('official_backtest_ready', False)),
+        }
+        labels = {
+            'lifecycle': '종목 생애주기',
+            'investability': '투자 가능성',
+            'corporate_action': '기업행사',
+            'official_backtest': '공식 백테스트',
+        }
+        for key, ready in readiness_labels.items():
+            if not ready:
+                issues.append(_issue(labels[key], '준비 상태가 잠겨 있습니다.'))
     if not dataset.snapshots:
         issues.append(_issue('종목군', '과거 종목군 스냅샷이 없습니다.'))
     if dataset.calendar.empty or not dataset.prices:
@@ -93,6 +116,8 @@ def readiness_report(dataset, config):
         'schedule': schedule,
         'warmup_start': warmup_start,
         'fingerprint': dataset.fingerprint(),
+        'readiness_labels': readiness_labels,
+        'investability_readiness': adapter_readiness,
     }
 
 
@@ -191,6 +216,16 @@ def render_backtest(market_path, dart_path, backtest_path):
         return
 
     st.subheader('실행 전 점검')
+    lock_columns = st.columns(4)
+    lock_labels = [
+        ('종목 생애주기', 'lifecycle'),
+        ('투자 가능성', 'investability'),
+        ('기업행사', 'corporate_action'),
+        ('공식 백테스트', 'official_backtest'),
+    ]
+    for column, (label, key) in zip(lock_columns, lock_labels):
+        value = readiness['readiness_labels'][key]
+        column.metric(label, '준비' if value is True else '잠금' if value is False else '미연결')
     a, b, c, d = st.columns(4)
     a.metric('초기자금', f'{config.initial_cash:,.0f}원')
     b.metric('유효 주차', f'{readiness["valid_weeks"]}주')

@@ -4,7 +4,7 @@ import unittest
 import pandas as pd
 
 from quantdesk.backtest import BacktestConfig, run_backtest
-from backtest_fixtures import three_week_fixture
+from tests.backtest_fixtures import FakeInvestabilityAdapter, three_week_fixture
 
 
 class BacktestTests(unittest.TestCase):
@@ -132,6 +132,85 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(result['comparison'].columns.tolist(), [
             'date', 'strategy', 'top100_equal_weight', 'kospi', 'kosdaq',
         ])
+
+    def test_execution_day_suspension_rejects_order_and_preserves_signal_audit(self):
+        dataset = three_week_fixture()
+        codes = dataset.snapshots['2026-09-04'].Code.tolist()
+        adapter = FakeInvestabilityAdapter(
+            codes,
+            execution_states={
+                ('2026-09-07', code): ('ineligible', ('trading_suspension',))
+                for code in codes
+            },
+        )
+        dataset.investability_adapter = adapter
+
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        first = result['audit'][0]
+        self.assertEqual(len(first['investability_signal']), 100)
+        rejection = first['execution_rejections'][0]
+        self.assertEqual(rejection['state'], 'ineligible')
+        self.assertIn('trading_suspension', rejection['reason_codes'])
+        self.assertIn('signal_timestamp', rejection)
+        self.assertIn('execution_timestamp', rejection)
+        self.assertFalse(
+            result['trades'].execution_date.eq('2026-09-07').any()
+        )
+
+    def test_existing_suspended_holding_carries_last_close_for_valuation_only(self):
+        baseline_dataset = three_week_fixture()
+        baseline = run_backtest(
+            baseline_dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+        held_code = baseline['trades'].iloc[0].code
+        dataset = three_week_fixture()
+        dataset.prices[held_code] = dataset.prices[held_code][
+            dataset.prices[held_code].Date.ne('2026-09-14')
+        ].reset_index(drop=True)
+        codes = dataset.snapshots['2026-09-04'].Code.tolist()
+        dataset.investability_adapter = FakeInvestabilityAdapter(
+            codes,
+            execution_states={
+                ('2026-09-14', held_code): ('ineligible', ('trading_suspension',)),
+            },
+        )
+
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertTrue(any(
+            item['security_id'] == f'sec-{held_code}'
+            for item in result['audit'][1]['execution_rejections']
+        ))
+        self.assertGreater(result['nav'].carried_prices.max(), 0)
+
+    def test_unknown_investability_blocks_official_result(self):
+        dataset = three_week_fixture()
+        dataset.investability_adapter = FakeInvestabilityAdapter(
+            dataset.snapshots['2026-09-04'].Code,
+            investability_ready=False,
+        )
+
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('투자 가능성' in issue for issue in result['issues']))
+        self.assertNotIn('metrics', result)
+
+    def test_fixture_backtest_result_is_unchanged_without_official_adapter(self):
+        result = run_backtest(
+            three_week_fixture(), BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['trades'].iloc[0].execution_date, '2026-09-07')
+        self.assertNotIn('investability_readiness', result)
 
 
 if __name__ == '__main__':

@@ -3,6 +3,58 @@ import pandas as pd
 from quantdesk.backtest_data import BacktestDataset
 
 
+class FakeInvestabilityAdapter:
+    def __init__(self, codes, eligible_codes=None, execution_states=None,
+                 investability_ready=True):
+        self.codes = [str(code).zfill(6) for code in codes]
+        self.eligible_codes = set(
+            str(code).zfill(6) for code in (eligible_codes or self.codes)
+        )
+        self.execution_states = dict(execution_states or {})
+        self.investability_ready = investability_ready
+        self.universe_calls = []
+        self.execution_calls = []
+
+    def universe(self, as_of_timestamp, policy_id):
+        self.universe_calls.append((as_of_timestamp, policy_id))
+        return pd.DataFrame([{
+            'security_id': f'sec-{code}', 'short_code': code,
+            'state': 'eligible', 'reason_codes': (),
+            'evidence_ids': (f'evidence-{code}',),
+            'policy_fingerprint': 'policy-fingerprint',
+            'model_fingerprint': 'model-fingerprint',
+        } for code in self.codes if code in self.eligible_codes])
+
+    def execution_status(self, security_id, session_date, decision_timestamp, policy_id):
+        code = security_id.removeprefix('sec-')
+        self.execution_calls.append(
+            (security_id, session_date, decision_timestamp, policy_id)
+        )
+        state, reasons = self.execution_states.get(
+            (session_date, code), ('eligible', ()),
+        )
+        return {
+            'security_id': security_id,
+            'as_of_timestamp': decision_timestamp,
+            'state': state,
+            'reason_codes': tuple(reasons),
+            'evidence_ids': (f'execution-{session_date}-{code}',),
+            'policy_fingerprint': 'policy-fingerprint',
+            'model_fingerprint': 'model-fingerprint',
+        }
+
+    def readiness(self, start_date, end_date, policy_id):
+        return {
+            'investability_ready': self.investability_ready,
+            'blocking_reasons': [] if self.investability_ready else ['공식 상태 미확인'],
+            'blocking_codes': [] if self.investability_ready else ['missing_daily_coverage'],
+            'lifecycle_ready': True,
+            'corporate_action_ready': False,
+            'official_backtest_ready': False,
+            'policy_id': policy_id,
+        }
+
+
 def listing_fixture(count=100):
     return pd.DataFrame([
         {

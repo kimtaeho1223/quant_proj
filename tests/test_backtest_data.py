@@ -3,7 +3,12 @@ import unittest
 import pandas as pd
 
 from quantdesk.backtest_data import BacktestDataError, BacktestDataset, rank_week
-from backtest_fixtures import dataset_fixture, listing_fixture, rank_ready_dataset_fixture
+from tests.backtest_fixtures import (
+    FakeInvestabilityAdapter,
+    dataset_fixture,
+    listing_fixture,
+    rank_ready_dataset_fixture,
+)
 
 
 class BacktestDatasetTests(unittest.TestCase):
@@ -74,6 +79,36 @@ class BacktestDatasetTests(unittest.TestCase):
         week = rank_week(data, '2026-09-25', minimum_ready=80)
 
         self.assertIn('유효 후보 79/100', week['issues'])
+
+    def test_signal_universe_uses_investability_decision_at_signal_timestamp(self):
+        data = dataset_fixture()
+        adapter = FakeInvestabilityAdapter(
+            data.snapshots['2026-09-25'].Code, eligible_codes=['000001'],
+        )
+        data.investability_adapter = adapter
+
+        week = data.week_inputs('2026-09-25')
+
+        self.assertEqual(week['listing'].Code.tolist(), ['000001'])
+        self.assertEqual(
+            adapter.universe_calls,
+            [('2026-09-25T15:30:00+09:00', 'investability-v1')],
+        )
+        self.assertEqual(
+            week['investability_signal'].iloc[0].evidence_ids,
+            ('evidence-000001',),
+        )
+
+    def test_252_session_rule_remains_strategy_readiness_not_investability(self):
+        data = dataset_fixture()
+        data.investability_adapter = FakeInvestabilityAdapter(
+            data.snapshots['2026-09-25'].Code,
+        )
+
+        week = rank_week(data, '2026-09-25', minimum_ready=80)
+
+        self.assertEqual(len(week['investability_signal']), 100)
+        self.assertIn('유효 후보 0/100', week['issues'])
 
 
 if __name__ == '__main__':
