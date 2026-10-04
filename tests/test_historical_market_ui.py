@@ -15,6 +15,7 @@ class HistoricalMarketUiTests(unittest.TestCase):
         os.environ['QUANTDESK_MARKET_DB'] = str(Path(self.folder.name) / 'market.db')
         os.environ['QUANTDESK_RAW_ROOT'] = str(Path(self.folder.name) / 'raw')
         os.environ['QUANTDESK_LIFECYCLE_RAW_ROOT'] = str(Path(self.folder.name) / 'lifecycle')
+        os.environ['QUANTDESK_INVESTABILITY_RAW_ROOT'] = str(Path(self.folder.name) / 'investability')
         fixture = Path(__file__).with_name('historical_market_ui_fixture_app.py')
         self.app = AppTest.from_file(str(fixture)).run(timeout=30)
 
@@ -22,6 +23,7 @@ class HistoricalMarketUiTests(unittest.TestCase):
         os.environ.pop('QUANTDESK_MARKET_DB', None)
         os.environ.pop('QUANTDESK_RAW_ROOT', None)
         os.environ.pop('QUANTDESK_LIFECYCLE_RAW_ROOT', None)
+        os.environ.pop('QUANTDESK_INVESTABILITY_RAW_ROOT', None)
         self.folder.cleanup()
 
     def test_start_requires_session_key_and_creates_persisted_job(self):
@@ -70,6 +72,13 @@ class HistoricalMarketUiTests(unittest.TestCase):
         row = store.job_dates(job_id).iloc[0]
         self.assertEqual(row.state, DateState.NON_SESSION.value)
         self.assertIn('한국거래소', row.message)
+
+    def test_investability_audit_is_rendered_after_lifecycle(self):
+        labels = [item.value for item in self.app.subheader]
+
+        self.assertIn('종목 생애주기', labels)
+        self.assertIn('투자 가능성 상태 감사', labels)
+        self.assertGreater(labels.index('투자 가능성 상태 감사'), labels.index('종목 생애주기'))
 
 
 if __name__ == '__main__':

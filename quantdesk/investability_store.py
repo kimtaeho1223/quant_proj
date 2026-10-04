@@ -238,6 +238,23 @@ class InvestabilityStore:
             for coverage_key, raw_version_id, reason, selected_at in rows
         }
 
+    def findings(self):
+        with self.connect() as db:
+            model = pd.read_sql_query('''SELECT severity,rule_id,message,security_id,
+                requested_date,evidence_id,'model' AS source
+                FROM investability_findings''', db)
+            reconciliation = pd.read_sql_query('''SELECT severity,rule_id,message,
+                security_id,requested_date,evidence_id,'reconciliation' AS source
+                FROM investability_reconciliation_findings''', db)
+        return pd.concat([model, reconciliation], ignore_index=True)
+
+    def listed_securities(self, requested_date: str):
+        day = pd.Timestamp(requested_date).date().isoformat()
+        with self.connect() as db:
+            return pd.read_sql_query('''SELECT requested_date,security_id,short_code,
+                name,market,security_kind FROM investability_listings
+                WHERE requested_date=? ORDER BY market,short_code''', db, params=(day,))
+
     def set_source_selection(self, coverage_key: str, raw_version_id: int, reason: str):
         day = pd.Timestamp(coverage_key).date().isoformat()
         reason = str(reason).strip()
