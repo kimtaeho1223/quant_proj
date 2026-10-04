@@ -6,6 +6,13 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from quantdesk.management_history import (
+    KRX_MANAGEMENT_HISTORY_URL,
+    archive_management_history,
+    compare_management_dates,
+    load_management_history,
+    management_state_on,
+)
 from quantdesk.investability_ingestion import (
     collect_investability_date,
     ingest_investability_csv,
@@ -63,6 +70,78 @@ def _readiness_labels(store, lifecycle_reader, start, end):
         '기업행사': False,
         '공식 백테스트': False,
     }
+
+
+def render_management_history_audit(archive_root: Path) -> None:
+    st.subheader('관리종목 지정·해제 내역 대조')
+    st.caption('KRX 개별종목 변경 내역은 전체시장 일별 상태 자료가 아닙니다. 백테스트 입력으로 승격되지 않습니다.')
+    st.link_button('KRX 원본 화면', KRX_MANAGEMENT_HISTORY_URL)
+    uploaded = st.file_uploader(
+        'KRX 관리종목 변경 내역 CSV', type=['csv'],
+        key='management_history_file',
+    )
+    if st.button(
+        '변경 내역 원본 보존', key='management_history_import',
+        disabled=uploaded is None,
+    ):
+        try:
+            artifact = archive_management_history(
+                Path(archive_root), uploaded_csv_bytes(uploaded),
+            )
+            st.success(f'원본을 보존했습니다. SHA-256: {artifact.sha256}')
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
+
+    files = sorted((Path(archive_root) / 'management_history').glob(
+        '*/*.management_history.csv.gz'
+    ))
+    if not files:
+        return
+    selected = st.selectbox(
+        '보존된 변경 내역', files,
+        format_func=lambda path: f'{path.parent.name} · {path.name.split("-")[1][:12]}',
+        key='management_history_archive',
+    )
+    try:
+        history = load_management_history(selected)
+    except (ValueError, OSError, EOFError) as exc:
+        st.error(f'보존 원본을 읽을 수 없습니다: {exc}')
+        return
+    st.caption(f'{history.name.iloc[0]} ({history.short_code.iloc[0]}) · {history.date.min()} ~ {history.date.max()}')
+    events = history[history.event.ne('-')]
+    st.dataframe(
+        events[['date', 'event', 'reason', 'source_row_number']],
+        hide_index=True, width='stretch',
+    )
+    boundary_indices = sorted({
+        index for event_index in events.index for index in (event_index - 1, event_index)
+        if index >= 0
+    })
+    boundaries = history.loc[boundary_indices, ['date', 'event']].copy()
+    boundaries['derived_state'] = boundaries.date.map(
+        lambda day: management_state_on(history, day)
+    )
+    st.dataframe(boundaries, hide_index=True, width='stretch')
+    st.info('공시 시각이 없는 변경 내역입니다. 효력 날짜와 당시 인지 가능 시각은 별도로 검증해야 합니다.')
+
+    columns = st.columns(2)
+    designated = columns[0].date_input(
+        '공시 지정일', value=None, key=f'management_designated_{selected.name}',
+    )
+    released = columns[1].date_input(
+        '공시 해제일', value=None, key=f'management_released_{selected.name}',
+    )
+    if st.button(
+        '공시 날짜 대조', key='management_compare',
+        disabled=designated is None or released is None,
+    ):
+        result = compare_management_dates(
+            history, designated.isoformat(), released.isoformat(),
+        )
+        if result['matched']:
+            st.success('공시 날짜와 KRX 변경 내역 날짜가 일치합니다. 공개 시각은 미검증입니다.')
+        else:
+            st.error('공시 날짜와 KRX 변경 내역 날짜가 일치하지 않습니다.')
 
 
 def render_investability_audit(store, archive_root: Path,
@@ -234,3 +313,4 @@ def render_investability_audit(store, archive_root: Path,
             })
         st.caption('종목별 판정과 evidence')
         st.dataframe(pd.DataFrame(decisions), hide_index=True, width='stretch')
+    render_management_history_audit(archive_root)

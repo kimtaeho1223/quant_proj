@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import pandas as pd
 
 
-SUPPORTED_DATASETS = {'daily_status'}
+SUPPORTED_DATASETS = {'daily_status', 'management_history'}
 MAX_RAW_BYTES = 50 * 1024 * 1024
 KRX_STATUS_ENDPOINT = 'https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
 
@@ -161,7 +161,7 @@ def _security_kind(value):
 def normalize_investability_rows(frame: pd.DataFrame, dataset: str,
                                  requested_date: str, raw_version_id: int,
                                  observed_at: str) -> pd.DataFrame:
-    if dataset not in SUPPORTED_DATASETS:
+    if dataset != 'daily_status':
         raise InvestabilitySourceError('지원하지 않는 투자 가능성 자료 종류입니다.')
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         raise InvestabilitySourceError('공식 원본에 검증 가능한 행이 없습니다.')

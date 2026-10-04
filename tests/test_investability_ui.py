@@ -1,10 +1,12 @@
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from quantdesk.management_history import archive_management_history
 from quantdesk.investability_ingestion import ingest_investability_csv
 from quantdesk.investability_store import InvestabilityStore
 from tests.investability_fixtures import (
@@ -150,6 +152,45 @@ class InvestabilityUiTests(unittest.TestCase):
 
         self.assertEqual(metrics['공식 백테스트'], '잠금')
         self.assertNotIn('공식 백테스트 준비 완료', success_text)
+
+    def test_management_history_upload_is_separate_from_daily_status(self):
+        app = self._app()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(app.button(key='management_history_import').disabled)
+        self.assertEqual(self.store.raw_versions().shape[0], 0)
+
+    def test_archived_management_history_shows_events_but_keeps_locks(self):
+        from tests.test_management_history import history_bytes
+        archive_management_history(self.raw_root, history_bytes())
+
+        app = self._app()
+
+        self.assertEqual(len(app.exception), 0)
+        tables = ' '.join(item.value.to_csv(index=False) for item in app.dataframe)
+        self.assertIn('2026-04-16', tables)
+        self.assertIn('2026-08-10', tables)
+        self.assertIn('지정', tables)
+        self.assertIn('해제', tables)
+        self.assertTrue(app.button(key='management_compare').disabled)
+        metrics = {item.label: item.value for item in app.metric}
+        self.assertEqual(metrics['공식 백테스트'], '잠금')
+        self.assertEqual(self.store.raw_versions().shape[0], 0)
+
+    def test_management_history_compares_user_entered_disclosure_dates(self):
+        from tests.test_management_history import history_bytes
+        archive_management_history(self.raw_root, history_bytes())
+        app = self._app()
+        designated = next(item for item in app.date_input if item.label == '공시 지정일')
+        released = next(item for item in app.date_input if item.label == '공시 해제일')
+        app = designated.set_value(date(2026, 4, 16)).run()
+        released = next(item for item in app.date_input if item.label == '공시 해제일')
+        app = released.set_value(date(2026, 8, 10)).run()
+        app = app.button(key='management_compare').click().run()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any('공개 시각은 미검증' in item.value for item in app.success))
+        self.assertEqual({item.label: item.value for item in app.metric}['공식 백테스트'], '잠금')
 
 
 if __name__ == '__main__':
