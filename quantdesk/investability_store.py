@@ -491,6 +491,9 @@ class InvestabilityStore:
         if meta is None:
             reasons.append('승격된 투자 가능성 모델이 없습니다.')
             codes.append('missing_promoted_model')
+        if not sessions or sessions[0] > start or sessions[-1] < end:
+            reasons.append('요청 기간 전체를 확인할 공식 거래일 달력이 없습니다.')
+            codes.append('missing_session_calendar')
         if unknown_dates:
             reasons.append(f'공식 상태가 없는 날짜 {len(unknown_dates)}일이 있습니다.')
             codes.append('missing_daily_coverage')

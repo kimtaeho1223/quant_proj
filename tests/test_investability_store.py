@@ -146,6 +146,22 @@ class InvestabilityStoreTests(unittest.TestCase):
         self.assertIn('2026-10-05', missing['unknown_dates'])
         self.assertFalse(unknown_policy['investability_ready'])
 
+    def test_readiness_blocks_range_without_session_calendar(self):
+        from quantdesk.investability import INVESTABILITY_V1
+        from quantdesk.investability_store import InvestabilityStore
+
+        store = InvestabilityStore(self.db_path)
+        store.promote(self._model(), INVESTABILITY_V1, {'2026-10-01': 1, '2026-10-02': 2})
+
+        outside = store.readiness('2026-11-01', '2026-11-30', 'investability-v1')
+
+        self.assertFalse(outside['investability_ready'])
+        self.assertIn('missing_session_calendar', outside['blocking_codes'])
+
+        overrun = store.readiness('2026-10-01', '2026-11-30', 'investability-v1')
+        self.assertFalse(overrun['investability_ready'])
+        self.assertIn('missing_session_calendar', overrun['blocking_codes'])
+
     def test_manual_review_cannot_mutate_raw_facts(self):
         from quantdesk.investability_source import InvestabilityRawArtifact
         from quantdesk.investability_store import InvestabilityStore
