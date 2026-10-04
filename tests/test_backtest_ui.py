@@ -3,7 +3,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from tests.backtest_fixtures import three_week_fixture
+from tests.backtest_fixtures import FakeInvestabilityAdapter, three_week_fixture
 from quantdesk.backtest import BacktestConfig
 from quantdesk.backtest_ui import readiness_report
 
@@ -33,6 +33,22 @@ class BacktestUiTests(unittest.TestCase):
         self.assertTrue(any(metric.label == '누적수익률' for metric in app.metric))
         self.assertTrue(any('배당 제외 가격수익률' in item.value for item in app.warning))
         self.assertTrue(any('공시' in item.value for item in app.subheader))
+
+    def test_investability_ready_does_not_clear_corporate_action_or_official_locks(self):
+        dataset = three_week_fixture()
+        dataset.investability_adapter = FakeInvestabilityAdapter(
+            dataset.snapshots['2026-09-04'].Code,
+            investability_ready=True,
+        )
+
+        report = readiness_report(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertTrue(report['readiness_labels']['investability'])
+        self.assertFalse(report['readiness_labels']['corporate_action'])
+        self.assertFalse(report['readiness_labels']['official_backtest'])
+        self.assertTrue(report['blocking'])
 
 
 if __name__ == '__main__':

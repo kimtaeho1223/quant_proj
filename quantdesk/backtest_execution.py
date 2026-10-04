@@ -42,7 +42,8 @@ def _valid_price(value):
     return number if math.isfinite(number) and number > 0 else None
 
 
-def execute_rebalance(ranked, holdings, cash, open_prices, cost_model, min_trade=100_000):
+def execute_rebalance(ranked, holdings, cash, open_prices, cost_model,
+                      min_trade=100_000, blocked_orders=None):
     model = _cost_model(cost_model)
     if not math.isfinite(cash) or cash < 0 or min_trade < 0:
         raise BacktestExecutionError('현금과 최소 주문금액을 확인해 주세요.')
@@ -51,6 +52,7 @@ def execute_rebalance(ranked, holdings, cash, open_prices, cost_model, min_trade
         raise BacktestExecutionError('보유 수량은 0 이상의 정수여야 합니다.')
     positions = {str(code): int(quantity) for code, quantity in holdings.items() if quantity > 0}
     opens = {str(code): _valid_price(price) for code, price in open_prices.items()}
+    blocked = dict(blocked_orders or {})
     missing_held = [code for code in positions if opens.get(code) is None]
     if missing_held:
         raise BacktestExecutionError(f"보유 종목 시가 없음: {', '.join(sorted(missing_held))}")
@@ -62,6 +64,13 @@ def execute_rebalance(ranked, holdings, cash, open_prices, cost_model, min_trade
     unfilled = []
     buy_rate = model['fee_rate'] + model['slippage_rate']
     for code in targets:
+        if code in blocked:
+            desired[code] = positions.get(code, 0)
+            unfilled.append({
+                'code': code, 'side': '매수',
+                'reason': '체결일 투자 가능성 상태로 주문 거부',
+            })
+            continue
         price = opens.get(code)
         if price is None:
             unfilled.append({'code': code, 'side': '매수', 'reason': '다음 거래일 시가 없음'})
@@ -105,6 +114,12 @@ def execute_rebalance(ranked, holdings, cash, open_prices, cost_model, min_trade
     for code in order_codes:
         delta = desired.get(code, 0) - positions.get(code, 0)
         if delta >= 0:
+            continue
+        if code in blocked:
+            unfilled.append({
+                'code': code, 'side': '매도',
+                'reason': '체결일 투자 가능성 상태로 주문 거부',
+            })
             continue
         quantity = -delta
         amount = quantity * opens[code]

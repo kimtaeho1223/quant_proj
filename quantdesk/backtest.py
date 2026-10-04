@@ -224,6 +224,20 @@ def run_backtest(dataset, config, external_cashflows=None):
     if schedule.empty:
         return _empty_result(dataset, config, issues=['실행 가능한 완료 주차가 없습니다.'])
 
+    adapter = getattr(dataset, 'investability_adapter', None)
+    policy_id = getattr(dataset, 'investability_policy_id', 'investability-v1')
+    investability_readiness = None
+    if adapter is not None:
+        investability_readiness = dataset.investability_readiness(config.start, config.end)
+        if not investability_readiness.get('investability_ready', False):
+            result = _empty_result(
+                dataset, config,
+                issues=['투자 가능성 공식 상태가 준비되지 않아 공식 결과를 생성할 수 없습니다.'],
+                audit=[{'investability_readiness': investability_readiness}],
+            )
+            result['investability_readiness'] = investability_readiness
+            return result
+
     first_signal = schedule.iloc[0].signal_date
     signal_history = dataset.calendar[dataset.calendar.date <= first_signal].date.tolist()
     validation_start = signal_history[-252] if len(signal_history) >= 252 else signal_history[0]
@@ -251,6 +265,7 @@ def run_backtest(dataset, config, external_cashflows=None):
     trade_rows = []
     audit_rows = []
     issues = []
+    security_ids = {}
     cost_model = {
         'fee_rate': config.fee_rate,
         'tax_rate': config.tax_rate,
@@ -278,19 +293,49 @@ def run_backtest(dataset, config, external_cashflows=None):
                 'exclusions': _records(week['exclusions']),
                 'filings': [],
                 'unfilled': [],
+                'investability_signal': _records(week.get('investability_signal')),
+                'execution_rejections': [],
             })
             return _empty_result(dataset, config, issues=issues, nav=nav_rows,
                                  weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+
+        signal_timestamp = f'{signal}T15:30:00+09:00'
+        execution_timestamp = f'{execution_date}T09:00:00+09:00'
+        security_ids.update(week.get('investability_by_code', {}))
+        holdings_before = dict(holdings)
+        blocked_orders = {}
+        if adapter is not None:
+            check_codes = sorted(set(week['ranked'].code) | set(holdings))
+            for code in check_codes:
+                security_id = security_ids.get(code)
+                if security_id is None:
+                    decision = {
+                        'security_id': None,
+                        'state': 'unknown',
+                        'reason_codes': ('missing_security_identity',),
+                        'evidence_ids': (),
+                        'policy_fingerprint': None,
+                        'model_fingerprint': None,
+                    }
+                else:
+                    decision = adapter.execution_status(
+                        security_id, execution_date, execution_timestamp, policy_id,
+                    )
+                if decision.get('state') != 'eligible':
+                    blocked_orders[code] = decision
 
         execution_open = dict(week['execution_open'])
         for code in holdings:
             price = _price_on(dataset, code, execution_date, 'Open')
             if price is not None:
                 execution_open[code] = price
+            elif code in blocked_orders and code in last_valid:
+                execution_open[code] = last_valid[code]
         try:
             execution = execute_rebalance(
                 week['ranked'], holdings, cash, execution_open,
                 cost_model, min_trade=config.min_trade,
+                blocked_orders=blocked_orders,
             )
         except BacktestExecutionError as exc:
             issues.append(f'{signal}: {exc}')
@@ -315,6 +360,22 @@ def run_backtest(dataset, config, external_cashflows=None):
             annotated_orders.append(annotated)
             trade_rows.append(annotated)
 
+        rejected_order_codes = set(execution['targets']) | set(holdings_before)
+        execution_rejections = []
+        for code in sorted(rejected_order_codes & set(blocked_orders)):
+            decision = blocked_orders[code]
+            execution_rejections.append({
+                'code': code,
+                'security_id': decision.get('security_id'),
+                'state': decision.get('state', 'unknown'),
+                'reason_codes': tuple(decision.get('reason_codes', ())),
+                'evidence_ids': tuple(decision.get('evidence_ids', ())),
+                'policy_fingerprint': decision.get('policy_fingerprint'),
+                'model_fingerprint': decision.get('model_fingerprint'),
+                'signal_timestamp': signal_timestamp,
+                'execution_timestamp': execution_timestamp,
+            })
+
         filings = []
         for code in week['ranked'].code.tolist():
             selected = select_statement(dataset.statements, code, signal)
@@ -336,6 +397,8 @@ def run_backtest(dataset, config, external_cashflows=None):
             'targets': list(execution['targets']),
             'orders': annotated_orders,
             'unfilled': list(execution['unfilled']),
+            'investability_signal': _records(week.get('investability_signal')),
+            'execution_rejections': execution_rejections,
         })
         weekly_rows.append({
             'signal_date': signal,
@@ -403,4 +466,16 @@ def run_backtest(dataset, config, external_cashflows=None):
     except MetricError as exc:
         result['status'] = 'incomplete'
         result['issues'].append(f'성과 지표 계산 실패: {exc}')
+    if investability_readiness is not None:
+        result['investability_readiness'] = investability_readiness
+        later_locks = []
+        if not investability_readiness.get('corporate_action_ready', False):
+            later_locks.append('기업행사 준비 상태가 잠겨 있습니다.')
+        if not investability_readiness.get('official_backtest_ready', False):
+            later_locks.append('공식 백테스트 준비 상태가 잠겨 있습니다.')
+        if later_locks:
+            result['status'] = 'incomplete'
+            result['issues'].extend(later_locks)
+            for key in ('metrics', 'benchmark_metrics', 'comparison'):
+                result.pop(key, None)
     return result

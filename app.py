@@ -27,6 +27,10 @@ if page == '과거 시장 데이터':
             'QUANTDESK_LIFECYCLE_RAW_ROOT',
             str(Path(__file__).parent / 'data' / 'raw' / 'krx' / 'lifecycle'),
         ),
+        os.environ.get(
+            'QUANTDESK_INVESTABILITY_RAW_ROOT',
+            str(Path(__file__).parent / 'data' / 'raw' / 'krx' / 'investability'),
+        ),
     )
     st.stop()
 if page == '백테스트':

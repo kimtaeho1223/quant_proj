@@ -10,6 +10,9 @@ import streamlit as st
 
 from quantdesk.historical_market import HistoricalIngestionService, RawArchive
 from quantdesk.historical_market_store import HistoricalMarketStore
+from quantdesk.investability_store import InvestabilityStore
+from quantdesk.investability_ui import render_investability_audit
+from quantdesk.security_lifecycle_store import SecurityLifecycleStore
 from quantdesk.security_lifecycle_ui import render_security_lifecycle
 
 
@@ -36,7 +39,8 @@ def launch_historical_worker(job_id, db_path, raw_root, service_key):
 
 
 def render_historical_market(
-    db_path, raw_root, lifecycle_raw_root=None, launcher=launch_historical_worker,
+    db_path, raw_root, lifecycle_raw_root=None, investability_raw_root=None,
+    launcher=launch_historical_worker,
 ):
     st.subheader('과거 시장 데이터')
     store = HistoricalMarketStore(db_path)
@@ -72,6 +76,14 @@ def render_historical_market(
         st.warning('공식 백테스트 사용 불가: 과거 시장 자료 수집이 필요합니다.')
         render_security_lifecycle(
             db_path, lifecycle_raw_root or Path(raw_root).parent / 'lifecycle',
+        )
+        lifecycle = SecurityLifecycleStore(db_path)
+        render_investability_audit(
+            InvestabilityStore(db_path),
+            investability_raw_root or Path(raw_root).parent / 'investability',
+            lifecycle,
+            _historical_sessions(store),
+            store,
         )
         return
 
@@ -148,3 +160,19 @@ def render_historical_market(
     render_security_lifecycle(
         db_path, lifecycle_raw_root or Path(raw_root).parent / 'lifecycle',
     )
+    lifecycle = SecurityLifecycleStore(db_path)
+    render_investability_audit(
+        InvestabilityStore(db_path),
+        investability_raw_root or Path(raw_root).parent / 'investability',
+        lifecycle,
+        _historical_sessions(store),
+        store,
+    )
+
+
+def _historical_sessions(store):
+    with store.connect() as db:
+        rows = db.execute('''SELECT DISTINCT trade_date
+            FROM historical_daily_market ORDER BY trade_date''').fetchall()
+    import pandas as pd
+    return pd.DataFrame({'date': [row[0] for row in rows]})

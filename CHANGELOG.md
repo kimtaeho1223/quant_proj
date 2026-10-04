@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 - 2026-10-04
+
+- Archive versioned official KRX investability status and require evidence-backed revision selection.
+- Apply `investability-v1` to point-in-time signal and execution decisions with explicit unknown states.
+- Reconcile status against lifecycle and daily-market evidence; expose audit findings and readiness in Streamlit.
+- Keep corporate-action and official-backtest locks closed pending their own validation and representative KRX audits.
+
 ## 0.6.0 - 2026-10-03
 
 - Archive versioned official KRX security-master, listing, delisting, and identifier-change evidence.

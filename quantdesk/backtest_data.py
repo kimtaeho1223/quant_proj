@@ -70,7 +70,8 @@ def _canonical_frame(frame):
 
 class BacktestDataset:
     def __init__(self, calendar, snapshots, prices, statements, companies,
-                 indices, corporate_actions):
+                 indices, corporate_actions, investability_adapter=None,
+                 investability_policy_id='investability-v1'):
         self.calendar = _normalize_calendar(calendar)
         self.snapshots = {
             _iso_date(date, '종목군'): _normalize_snapshot(frame)
@@ -87,6 +88,17 @@ class BacktestDataset:
             for symbol, frame in indices.items()
         }
         self.corporate_actions = corporate_actions.copy() if isinstance(corporate_actions, pd.DataFrame) else pd.DataFrame()
+        self.investability_adapter = investability_adapter
+        self.investability_policy_id = str(investability_policy_id)
+
+    def investability_readiness(self, start_date, end_date):
+        if self.investability_adapter is None:
+            return None
+        return self.investability_adapter.readiness(
+            _iso_date(start_date, '시작일'),
+            _iso_date(end_date, '종료일'),
+            self.investability_policy_id,
+        )
 
     def schedule(self, start, end):
         first = _iso_date(start, '시작일')
@@ -122,6 +134,30 @@ class BacktestDataset:
             raise BacktestDataError('다음 거래일이 없습니다.')
 
         listing = self.snapshots[signal].copy()
+        investability_signal = pd.DataFrame()
+        investability_by_code = {}
+        if self.investability_adapter is not None:
+            signal_timestamp = f'{signal}T15:30:00+09:00'
+            investability_signal = self.investability_adapter.universe(
+                signal_timestamp, self.investability_policy_id,
+            )
+            required = {'security_id', 'short_code', 'state'}
+            if not isinstance(investability_signal, pd.DataFrame) or not required.issubset(
+                investability_signal.columns
+            ):
+                raise BacktestDataError('투자 가능성 종목군 형식을 확인해 주세요.')
+            investability_signal = investability_signal.copy()
+            investability_signal['short_code'] = (
+                investability_signal.short_code.astype(str).str.zfill(6)
+            )
+            investability_signal = investability_signal[
+                investability_signal.state.eq('eligible')
+            ].reset_index(drop=True)
+            investability_by_code = {
+                row.short_code: row.security_id
+                for row in investability_signal.itertuples(index=False)
+            }
+            listing = listing[listing.Code.isin(investability_by_code)].reset_index(drop=True)
         codes = listing.Code.tolist()
         histories = {}
         execution_open = {}
@@ -159,6 +195,8 @@ class BacktestDataset:
             'valuation_closes': valuation_closes,
             'corporate_actions': actions,
             'issues': issues,
+            'investability_signal': investability_signal,
+            'investability_by_code': investability_by_code,
         }
 
     def fingerprint(self):
