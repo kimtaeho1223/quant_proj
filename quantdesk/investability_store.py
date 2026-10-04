@@ -177,6 +177,74 @@ class InvestabilityStore:
                 observed_at,source_url,created_at FROM investability_raw_versions
                 ORDER BY id''', db)
 
+    def raw_version(self, raw_version_id: int):
+        with self.connect() as db:
+            row = db.execute('''SELECT id,dataset,requested_date,sha256,path,
+                observed_at,source_url,created_at FROM investability_raw_versions
+                WHERE id=?''', (int(raw_version_id),)).fetchone()
+        if row is None:
+            return None
+        columns = [
+            'id', 'dataset', 'requested_date', 'sha256', 'path',
+            'observed_at', 'source_url', 'created_at',
+        ]
+        return dict(zip(columns, row))
+
+    def save_source_rows(self, raw_version_id: int, rows: pd.DataFrame):
+        records = self._records(rows)
+        with self.connect() as db:
+            exists = db.execute(
+                'SELECT 1 FROM investability_raw_versions WHERE id=?',
+                (int(raw_version_id),),
+            ).fetchone()
+            if exists is None:
+                raise ValueError('존재하지 않는 투자 가능성 원본 버전입니다.')
+            db.executemany('''INSERT OR IGNORE INTO investability_source_rows
+                (raw_version_id,source_row_number,row_json) VALUES(?,?,?)''', [
+                (
+                    int(raw_version_id),
+                    int(record.get('source_row_number') or index),
+                    _json(record),
+                )
+                for index, record in enumerate(records, start=1)
+            ])
+
+    def source_selections(self):
+        with self.connect() as db:
+            rows = db.execute('''SELECT coverage_key,raw_version_id,reason,selected_at
+                FROM investability_source_selections ORDER BY coverage_key''').fetchall()
+        return {
+            coverage_key: {
+                'raw_version_id': int(raw_version_id),
+                'reason': reason,
+                'selected_at': selected_at,
+            }
+            for coverage_key, raw_version_id, reason, selected_at in rows
+        }
+
+    def set_source_selection(self, coverage_key: str, raw_version_id: int, reason: str):
+        day = pd.Timestamp(coverage_key).date().isoformat()
+        reason = str(reason).strip()
+        if not reason:
+            raise ValueError('원본 선택 사유가 필요합니다.')
+        with self.connect() as db:
+            raw = db.execute(
+                'SELECT requested_date FROM investability_raw_versions WHERE id=?',
+                (int(raw_version_id),),
+            ).fetchone()
+            if raw is None:
+                raise ValueError('존재하지 않는 투자 가능성 원본 버전입니다.')
+            if raw[0] != day:
+                raise ValueError('원본 버전의 기준일이 선택 범위와 다릅니다.')
+            db.execute('''INSERT INTO investability_source_selections
+                (coverage_key,raw_version_id,reason,selected_at) VALUES(?,?,?,?)
+                ON CONFLICT(coverage_key) DO UPDATE SET
+                    raw_version_id=excluded.raw_version_id,
+                    reason=excluded.reason,
+                    selected_at=excluded.selected_at''', (
+                day, int(raw_version_id), reason, _now(),
+            ))
+
     @staticmethod
     def _insert_records(db, table, records, columns):
         if not records:
@@ -356,22 +424,44 @@ class InvestabilityStore:
             rebuild = db.execute(
                 'SELECT status FROM investability_rebuilds ORDER BY id DESC LIMIT 1'
             ).fetchone()
+            pending_revisions = [row[0] for row in db.execute('''
+                SELECT raw.requested_date
+                FROM investability_raw_versions AS raw
+                LEFT JOIN investability_source_selections AS selected
+                  ON selected.coverage_key=raw.requested_date
+                WHERE raw.requested_date BETWEEN ? AND ?
+                GROUP BY raw.requested_date,selected.raw_version_id
+                HAVING MAX(raw.id) != selected.raw_version_id
+                    OR selected.raw_version_id IS NULL
+                ORDER BY raw.requested_date
+            ''', (start, end))]
         unknown_dates = sorted(set(sessions) - coverage)
         reasons = []
+        codes = []
         if policy is None:
             reasons.append('알 수 없는 투자 가능성 정책입니다.')
+            codes.append('unknown_policy')
         if meta is None:
             reasons.append('승격된 투자 가능성 모델이 없습니다.')
+            codes.append('missing_promoted_model')
         if unknown_dates:
             reasons.append(f'공식 상태가 없는 날짜 {len(unknown_dates)}일이 있습니다.')
+            codes.append('missing_daily_coverage')
         if blocking:
             reasons.append(f'해결되지 않은 차단 항목 {blocking}건이 있습니다.')
+            codes.append('blocking_findings')
+        if pending_revisions:
+            reasons.append(f'선택되지 않은 공식 수정본이 {len(pending_revisions)}일 있습니다.')
+            codes.append('unselected_revision')
         if rebuild and rebuild[0] == 'failed':
             reasons.append('최근 재빌드 검증 실패가 해결되지 않았습니다.')
+            codes.append('rebuild_mismatch')
         return {
             'investability_ready': not reasons,
             'blocking_reasons': reasons,
+            'blocking_codes': codes,
             'unknown_dates': unknown_dates,
+            'pending_revision_dates': pending_revisions,
             'start_date': start,
             'end_date': end,
             'policy_id': policy_id,

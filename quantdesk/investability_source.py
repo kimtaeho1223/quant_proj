@@ -236,6 +236,4 @@ def fetch_investability_snapshot(requested_date: str, http_get,
         raise InvestabilitySourceError(
             'KRX 공식 상태 자료를 내려받을 수 없습니다. 공식 CSV를 확인하세요.'
         ) from exc
-    content = bytes(response.content)
-    decode_investability_csv(content)
-    return content
+    return bytes(response.content)
