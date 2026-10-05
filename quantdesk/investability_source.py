@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import pandas as pd
 
 
-SUPPORTED_DATASETS = {'daily_status', 'management_history'}
+SUPPORTED_DATASETS = {'daily_status', 'management_history', 'suspension_history'}
 MAX_RAW_BYTES = 50 * 1024 * 1024
 KRX_STATUS_ENDPOINT = 'https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
 
