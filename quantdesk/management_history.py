@@ -87,13 +87,33 @@ def management_state_on(history: pd.DataFrame, date: str) -> str:
     return 'designated' if events.iloc[-1].event == '지정' else 'released'
 
 
-def compare_management_dates(history: pd.DataFrame, designated: str,
-                             released: str) -> dict:
-    start, end = _day(designated), _day(released)
+def compare_management_timing(
+    history: pd.DataFrame, *,
+    designated_disclosed_on: str, designated_disclosed_at: str,
+    designated_effective_on: str, released_disclosed_on: str,
+    released_disclosed_at: str, released_effective_on: str,
+) -> dict:
+    designated_disclosure = _day(designated_disclosed_on)
+    designated_effective = _day(designated_effective_on)
+    released_disclosure = _day(released_disclosed_on)
+    released_effective = _day(released_effective_on)
+    times = (designated_disclosed_at.strip(), released_disclosed_at.strip())
+    for value in times:
+        if value and not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', value):
+            raise ValueError('공개 시각은 24시간제 HH:MM 형식으로 입력해 주세요.')
     events = history[history.event.isin({'지정', '해제'})]
     pairs = list(zip(events.date, events.event))
     return {
-        'matched': start < end and (start, '지정') in pairs and (end, '해제') in pairs,
+        'effective_dates_match': (
+            designated_effective < released_effective
+            and (designated_effective, '지정') in pairs
+            and (released_effective, '해제') in pairs
+        ),
+        'calendar_order_valid': (
+            designated_disclosure <= designated_effective
+            < released_disclosure <= released_effective
+        ),
+        'publication_times_recorded': all(times),
         'publication_time_verified': False,
     }
 

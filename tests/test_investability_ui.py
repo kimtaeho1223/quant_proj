@@ -177,19 +177,25 @@ class InvestabilityUiTests(unittest.TestCase):
         self.assertEqual(metrics['공식 백테스트'], '잠금')
         self.assertEqual(self.store.raw_versions().shape[0], 0)
 
-    def test_management_history_compares_user_entered_disclosure_dates(self):
+    def test_management_history_separates_disclosure_and_effective_dates(self):
         from tests.test_management_history import history_bytes
         archive_management_history(self.raw_root, history_bytes())
         app = self._app()
-        designated = next(item for item in app.date_input if item.label == '공시 지정일')
-        released = next(item for item in app.date_input if item.label == '공시 해제일')
-        app = designated.set_value(date(2026, 4, 16)).run()
-        released = next(item for item in app.date_input if item.label == '공시 해제일')
-        app = released.set_value(date(2026, 8, 10)).run()
+        values = {
+            '지정 공시일': date(2026, 4, 15),
+            '지정 효력일': date(2026, 4, 16),
+            '해제 공시일': date(2026, 8, 7),
+            '해제 효력일': date(2026, 8, 10),
+        }
+        for label, value in values.items():
+            field = next(item for item in app.date_input if item.label == label)
+            app = field.set_value(value).run()
         app = app.button(key='management_compare').click().run()
 
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any('공개 시각은 미검증' in item.value for item in app.success))
+        self.assertTrue(any('효력일 일치' in item.value for item in app.warning))
+        self.assertTrue(any('공개 시각은 미검증' in item.value for item in app.warning))
+        self.assertFalse(any('공개 시각 검증 완료' in item.value for item in app.success))
         self.assertEqual({item.label: item.value for item in app.metric}['공식 백테스트'], '잠금')
 
 

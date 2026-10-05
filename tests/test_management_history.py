@@ -5,7 +5,7 @@ from pathlib import Path
 
 from quantdesk.management_history import (
     archive_management_history,
-    compare_management_dates,
+    compare_management_timing,
     load_management_history,
     management_state_on,
     parse_management_history,
@@ -37,16 +37,52 @@ class ManagementHistoryTests(unittest.TestCase):
         self.assertEqual(management_state_on(history, '2026-08-11'), 'released')
         self.assertEqual(management_state_on(history, '2026-08-12'), 'unknown')
 
-    def test_official_dates_match_events_without_certifying_publication_time(self):
+    def test_disclosure_dates_are_distinct_from_matching_effective_dates(self):
         history = parse_management_history(history_bytes())
 
         self.assertEqual(
-            compare_management_dates(history, '2026-04-16', '2026-08-10'),
-            {'matched': True, 'publication_time_verified': False},
+            compare_management_timing(
+                history,
+                designated_disclosed_on='2026-04-15',
+                designated_disclosed_at='',
+                designated_effective_on='2026-04-16',
+                released_disclosed_on='2026-08-07',
+                released_disclosed_at='',
+                released_effective_on='2026-08-10',
+            ),
+            {
+                'effective_dates_match': True,
+                'calendar_order_valid': True,
+                'publication_times_recorded': False,
+                'publication_time_verified': False,
+            },
         )
-        self.assertFalse(compare_management_dates(
-            history, '2026-04-15', '2026-08-10',
-        )['matched'])
+
+    def test_entered_times_do_not_certify_publication_or_bad_date_order(self):
+        history = parse_management_history(history_bytes())
+        evidence = dict(
+            designated_disclosed_on='2026-04-15',
+            designated_disclosed_at='19:30',
+            designated_effective_on='2026-04-16',
+            released_disclosed_on='2026-08-07',
+            released_disclosed_at='16:20',
+            released_effective_on='2026-08-10',
+        )
+
+        result = compare_management_timing(history, **evidence)
+        self.assertTrue(result['effective_dates_match'])
+        self.assertTrue(result['publication_times_recorded'])
+        self.assertFalse(result['publication_time_verified'])
+
+        evidence['released_disclosed_on'] = '2026-08-11'
+        self.assertFalse(compare_management_timing(history, **evidence)['calendar_order_valid'])
+        evidence['released_disclosed_on'] = '2026-08-07'
+        evidence['released_effective_on'] = '2026-08-07'
+        self.assertFalse(compare_management_timing(history, **evidence)['effective_dates_match'])
+
+        evidence['designated_disclosed_at'] = '25:00'
+        with self.assertRaises(ValueError):
+            compare_management_timing(history, **evidence)
 
     def test_rejects_conflicting_or_ambiguous_event_history(self):
         rows = history_bytes().decode('cp949').splitlines()[1:]
