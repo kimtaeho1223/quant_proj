@@ -9,7 +9,7 @@ import streamlit as st
 from quantdesk.management_history import (
     KRX_MANAGEMENT_HISTORY_URL,
     archive_management_history,
-    compare_management_dates,
+    compare_management_timing,
     load_management_history,
     management_state_on,
 )
@@ -122,26 +122,59 @@ def render_management_history_audit(archive_root: Path) -> None:
         lambda day: management_state_on(history, day)
     )
     st.dataframe(boundaries, hide_index=True, width='stretch')
-    st.info('공시 시각이 없는 변경 내역입니다. 효력 날짜와 당시 인지 가능 시각은 별도로 검증해야 합니다.')
+    st.info('변경 내역 CSV에는 공개 시각이 없습니다. 공시 시점과 효력일을 분리해 대조해도 당시 인지 가능성은 미검증입니다.')
 
-    columns = st.columns(2)
-    designated = columns[0].date_input(
-        '공시 지정일', value=None, key=f'management_designated_{selected.name}',
-    )
-    released = columns[1].date_input(
-        '공시 해제일', value=None, key=f'management_released_{selected.name}',
-    )
-    if st.button(
-        '공시 날짜 대조', key='management_compare',
-        disabled=designated is None or released is None,
-    ):
-        result = compare_management_dates(
-            history, designated.isoformat(), released.isoformat(),
+    designated_column, released_column = st.columns(2)
+    with designated_column:
+        designated_disclosure = st.date_input(
+            '지정 공시일', value=None, key=f'management_designated_disclosure_{selected.name}',
         )
-        if result['matched']:
-            st.success('공시 날짜와 KRX 변경 내역 날짜가 일치합니다. 공개 시각은 미검증입니다.')
+        designated_time = st.text_input(
+            '지정 공개 시각 (KST, HH:MM)',
+            key=f'management_designated_time_{selected.name}',
+            placeholder='원문 시각 미확인 시 비워두기',
+        )
+        designated_effective = st.date_input(
+            '지정 효력일', value=None, key=f'management_designated_effective_{selected.name}',
+        )
+    with released_column:
+        released_disclosure = st.date_input(
+            '해제 공시일', value=None, key=f'management_released_disclosure_{selected.name}',
+        )
+        released_time = st.text_input(
+            '해제 공개 시각 (KST, HH:MM)',
+            key=f'management_released_time_{selected.name}',
+            placeholder='원문 시각 미확인 시 비워두기',
+        )
+        released_effective = st.date_input(
+            '해제 효력일', value=None, key=f'management_released_effective_{selected.name}',
+        )
+    if st.button(
+        '공시·효력일 대조', key='management_compare',
+        disabled=any(value is None for value in (
+            designated_disclosure, designated_effective,
+            released_disclosure, released_effective,
+        )),
+    ):
+        try:
+            result = compare_management_timing(
+                history,
+                designated_disclosed_on=designated_disclosure.isoformat(),
+                designated_disclosed_at=designated_time,
+                designated_effective_on=designated_effective.isoformat(),
+                released_disclosed_on=released_disclosure.isoformat(),
+                released_disclosed_at=released_time,
+                released_effective_on=released_effective.isoformat(),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
         else:
-            st.error('공시 날짜와 KRX 변경 내역 날짜가 일치하지 않습니다.')
+            if not result['calendar_order_valid']:
+                st.error('공시일과 효력일의 순서가 맞지 않습니다. 원문과 입력값을 확인해 주세요.')
+            elif not result['effective_dates_match']:
+                st.error('입력한 효력일이 KRX 변경 내역의 지정·해제일과 일치하지 않습니다.')
+            else:
+                st.warning('효력일 일치(부분검증). 공개 시각은 미검증입니다. 입력 시각만으로 당시 인지 가능성을 입증할 수 없습니다.')
 
 
 def render_investability_audit(store, archive_root: Path,

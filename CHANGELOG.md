@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separate management-disclosure dates/times from effective dates; keep point-in-time verification pending.
 - Archive KRX single-security management designation/release history separately from daily status.
 - Reconstruct event-derived status only on observed dates and compare disclosure dates in the audit UI.
 - Keep official-backtest readiness locked; event history alone does not establish full-market coverage or publication time.
