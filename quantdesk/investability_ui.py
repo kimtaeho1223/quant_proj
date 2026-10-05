@@ -21,6 +21,13 @@ from quantdesk.investability_ingestion import (
     select_investability_source,
 )
 from quantdesk.investability_source import MAX_RAW_BYTES
+from quantdesk.suspension_history import (
+    KRX_SUSPENSION_HISTORY_URL,
+    archive_suspension_history,
+    compare_suspension_timing,
+    load_suspension_history,
+    suspension_state_on,
+)
 
 
 def uploaded_csv_bytes(uploaded):
@@ -175,6 +182,119 @@ def render_management_history_audit(archive_root: Path) -> None:
                 st.error('입력한 효력일이 KRX 변경 내역의 지정·해제일과 일치하지 않습니다.')
             else:
                 st.warning('효력일 일치(부분검증). 공개 시각은 미검증입니다. 입력 시각만으로 당시 인지 가능성을 입증할 수 없습니다.')
+
+
+def render_suspension_history_audit(archive_root: Path) -> None:
+    st.subheader('매매정지·재개 내역 대조')
+    st.caption('KRX 개별종목 내역은 전체시장 일별 상태가 아닙니다. 원본 CSV 구조의 실자료 검증 전이며 백테스트 입력으로 승격되지 않습니다.')
+    st.link_button('KRX 매매거래정지 원본 화면', KRX_SUSPENSION_HISTORY_URL)
+    uploaded = st.file_uploader(
+        'KRX 매매거래정지 내역 CSV', type=['csv'], key='suspension_history_file',
+    )
+    if st.button(
+        '정지 내역 원본 보존', key='suspension_history_import',
+        disabled=uploaded is None,
+    ):
+        try:
+            artifact = archive_suspension_history(
+                Path(archive_root), uploaded_csv_bytes(uploaded),
+            )
+            st.success(f'원본을 보존했습니다. SHA-256: {artifact.sha256}')
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
+
+    files = sorted((Path(archive_root) / 'suspension_history').glob(
+        '*/*.suspension_history.csv.gz'
+    ))
+    if not files:
+        return
+    selected = st.selectbox(
+        '보존된 정지 내역', files,
+        format_func=lambda path: f'{path.parent.name} · {path.name.split("-")[1][:12]}',
+        key='suspension_history_archive',
+    )
+    try:
+        history = load_suspension_history(selected)
+    except (ValueError, OSError, EOFError) as exc:
+        st.error(f'보존 원본을 읽을 수 없습니다: {exc}')
+        return
+    st.caption(f'{history.name.iloc[0]} ({history.short_code.iloc[0]}) · {len(history)}개 구간')
+    st.dataframe(
+        history[['halt_date', 'resume_date', 'source_row_number']],
+        hide_index=True, width='stretch',
+    )
+    interval_index = st.selectbox(
+        '대조할 정지 구간', list(range(len(history))),
+        format_func=lambda index: (
+            f'{history.iloc[index].halt_date} ~ '
+            f'{history.iloc[index].resume_date or "재개일 미확인"}'
+        ),
+        key='suspension_interval',
+    )
+    row = history.iloc[interval_index]
+    boundary_days = [row.halt_date]
+    if row.resume_date is not None:
+        boundary_days.append(row.resume_date)
+    st.dataframe(
+        pd.DataFrame({
+            'date': boundary_days,
+            'derived_state': [suspension_state_on(history, day) for day in boundary_days],
+        }),
+        hide_index=True, width='stretch',
+    )
+    st.info('정지·재개일만으로는 공시 공개 시각과 그 이전 거래 가능 여부를 검증할 수 없습니다. 재개일 미기재 또는 당일 정지·재개는 미확인으로 둡니다.')
+
+    halted_column, resumed_column = st.columns(2)
+    with halted_column:
+        halted_disclosure = st.date_input(
+            '정지 공시일', value=None, key=f'suspension_halted_disclosure_{selected.name}',
+        )
+        halted_time = st.text_input(
+            '정지 공개 시각 (KST, HH:MM)',
+            key=f'suspension_halted_time_{selected.name}',
+            placeholder='원문 시각 미확인 시 비워두기',
+        )
+        halted_effective = st.date_input(
+            '정지 효력일', value=None, key=f'suspension_halted_effective_{selected.name}',
+        )
+    with resumed_column:
+        resumed_disclosure = st.date_input(
+            '재개 공시일', value=None, key=f'suspension_resumed_disclosure_{selected.name}',
+        )
+        resumed_time = st.text_input(
+            '재개 공개 시각 (KST, HH:MM)',
+            key=f'suspension_resumed_time_{selected.name}',
+            placeholder='원문 시각 미확인 시 비워두기',
+        )
+        resumed_effective = st.date_input(
+            '재개 효력일', value=None, key=f'suspension_resumed_effective_{selected.name}',
+        )
+    if st.button(
+        '정지·재개 공시 대조', key='suspension_compare',
+        disabled=any(value is None for value in (
+            halted_disclosure, halted_effective,
+            resumed_disclosure, resumed_effective,
+        )),
+    ):
+        try:
+            result = compare_suspension_timing(
+                history, interval_index=interval_index,
+                halted_disclosed_on=halted_disclosure.isoformat(),
+                halted_disclosed_at=halted_time,
+                halted_effective_on=halted_effective.isoformat(),
+                resumed_disclosed_on=resumed_disclosure.isoformat(),
+                resumed_disclosed_at=resumed_time,
+                resumed_effective_on=resumed_effective.isoformat(),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if not result['calendar_order_valid']:
+                st.error('공시일과 효력일의 순서가 맞지 않습니다. 원문과 입력값을 확인해 주세요.')
+            elif not result['effective_dates_match']:
+                st.error('입력한 효력일이 KRX 정지·재개일과 일치하지 않거나 구간이 불완전합니다.')
+            else:
+                st.warning('효력일 일치(부분검증). 공개 시각은 미검증이며 이 내역만으로 거래 가능 여부를 확정할 수 없습니다.')
 
 
 def render_investability_audit(store, archive_root: Path,
@@ -347,3 +467,4 @@ def render_investability_audit(store, archive_root: Path,
         st.caption('종목별 판정과 evidence')
         st.dataframe(pd.DataFrame(decisions), hide_index=True, width='stretch')
     render_management_history_audit(archive_root)
+    render_suspension_history_audit(archive_root)

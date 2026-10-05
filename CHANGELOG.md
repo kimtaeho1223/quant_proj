@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a separate, immutable KRX trading-halt/resumption CSV audit with conservative boundary states.
+- Compare disclosure and effective dates without promoting event history to daily investability or unlocking backtests.
 - Separate management-disclosure dates/times from effective dates; keep point-in-time verification pending.
 - Archive KRX single-security management designation/release history separately from daily status.
 - Reconstruct event-derived status only on observed dates and compare disclosure dates in the audit UI.

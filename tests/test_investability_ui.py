@@ -7,6 +7,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 from quantdesk.management_history import archive_management_history
+from quantdesk.suspension_history import archive_suspension_history
 from quantdesk.investability_ingestion import ingest_investability_csv
 from quantdesk.investability_store import InvestabilityStore
 from tests.investability_fixtures import (
@@ -196,6 +197,41 @@ class InvestabilityUiTests(unittest.TestCase):
         self.assertTrue(any('효력일 일치' in item.value for item in app.warning))
         self.assertTrue(any('공개 시각은 미검증' in item.value for item in app.warning))
         self.assertFalse(any('공개 시각 검증 완료' in item.value for item in app.success))
+        self.assertEqual({item.label: item.value for item in app.metric}['공식 백테스트'], '잠금')
+
+    def test_suspension_history_is_a_separate_non_promoted_audit(self):
+        from tests.test_suspension_history import suspension_bytes
+        archive_suspension_history(self.raw_root, suspension_bytes())
+
+        app = self._app()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(app.button(key='suspension_history_import').disabled)
+        self.assertTrue(app.button(key='suspension_compare').disabled)
+        tables = ' '.join(item.value.to_csv(index=False) for item in app.dataframe)
+        self.assertIn('2026-04-16', tables)
+        self.assertIn('2026-04-20', tables)
+        self.assertEqual(self.store.raw_versions().shape[0], 0)
+        self.assertEqual({item.label: item.value for item in app.metric}['공식 백테스트'], '잠금')
+
+    def test_suspension_comparison_stays_partial_after_matching_dates(self):
+        from tests.test_suspension_history import suspension_bytes
+        archive_suspension_history(self.raw_root, suspension_bytes())
+        app = self._app()
+        values = {
+            '정지 공시일': date(2026, 4, 15),
+            '정지 효력일': date(2026, 4, 16),
+            '재개 공시일': date(2026, 4, 17),
+            '재개 효력일': date(2026, 4, 20),
+        }
+        for label, value in values.items():
+            field = next(item for item in app.date_input if item.label == label)
+            app = field.set_value(value).run()
+        app = app.button(key='suspension_compare').click().run()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any('부분검증' in item.value for item in app.warning))
+        self.assertFalse(any('검증 완료' in item.value for item in app.success))
         self.assertEqual({item.label: item.value for item in app.metric}['공식 백테스트'], '잠금')
 
 
