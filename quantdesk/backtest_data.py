@@ -4,6 +4,8 @@ import json
 
 import pandas as pd
 
+from quantdesk.corporate_actions import split_adjusted_closes
+
 
 class BacktestDataError(ValueError):
     pass
@@ -121,7 +123,7 @@ class BacktestDataset:
                 rows.append({'signal_date': signal, 'execution_date': execution})
         return pd.DataFrame(rows, columns=['signal_date', 'execution_date'])
 
-    def week_inputs(self, signal_date):
+    def week_inputs(self, signal_date, research_actions=None):
         signal = _iso_date(signal_date, '신호일')
         if signal not in set(self.calendar.date):
             raise BacktestDataError('신호일이 거래일 달력에 없습니다.')
@@ -168,7 +170,16 @@ class BacktestDataset:
             if prices is None:
                 issues.append(f'{code}: 주가 없음')
                 continue
-            histories[code] = prices[prices.Date <= signal].copy()
+            history = prices[prices.Date <= signal].copy()
+            if research_actions is not None:
+                events = research_actions.events_for(code)
+                if events:
+                    adjusted = split_adjusted_closes(
+                        history, research_actions.evidence_for(code), events,
+                        f'{signal}T15:30:00+09:00',
+                    )
+                    history['Close'] = adjusted['Close']
+            histories[code] = history
             open_row = prices[prices.Date == execution]
             if open_row.empty:
                 issues.append(f'{code}: 다음 거래일 시가 없음')
@@ -213,12 +224,12 @@ class BacktestDataset:
         return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 
 
-def rank_week(dataset, signal_date, minimum_ready=80):
+def rank_week(dataset, signal_date, minimum_ready=80, research_actions=None):
     if minimum_ready < 1 or minimum_ready > 100:
         raise BacktestDataError('최소 유효 후보 수는 1~100이어야 합니다.')
     from quantdesk.real_ranking import build_ranking
 
-    week = dataset.week_inputs(signal_date)
+    week = dataset.week_inputs(signal_date, research_actions=research_actions)
     ranked, exclusions = build_ranking(
         week['listing'], week['prices_by_code'], week['eligible_statements'],
         dataset.companies, week['signal_date'], minimum_history=252,

@@ -318,7 +318,10 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
         signal = schedule_row.signal_date
         execution_date = schedule_row.execution_date
         try:
-            week = rank_week(dataset, signal, minimum_ready=config.minimum_ready)
+            week = rank_week(
+                dataset, signal, minimum_ready=config.minimum_ready,
+                research_actions=research_actions,
+            )
         except (BacktestDataError, ValueError) as exc:
             issues.append(f'{signal}: {exc}')
             return _empty_result(dataset, config, issues=issues, nav=nav_rows,
