@@ -76,6 +76,16 @@ class BacktestTests(unittest.TestCase):
         self.assertTrue(any('검증되지 않은 기업행사' in issue for issue in result['issues']))
         self.assertNotIn('metrics', result)
 
+    def test_validated_action_without_accounting_stops_result(self):
+        result = run_backtest(
+            three_week_fixture(corporate_action_status='validated'),
+            BacktestConfig('2026-09-01', '2026-09-30'),
+        )
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('계산에 반영되지 않은 기업행사' in issue for issue in result['issues']))
+        self.assertNotIn('metrics', result)
+
     def test_unvalidated_corporate_action_in_warmup_stops_official_result(self):
         dataset = three_week_fixture()
         dataset.corporate_actions = pd.DataFrame([{
@@ -116,7 +126,7 @@ class BacktestTests(unittest.TestCase):
             three_week_fixture(), BacktestConfig('2026-09-01', '2026-09-30'),
         )
 
-        self.assertEqual(result['engine_version'], '0.4.0')
+        self.assertEqual(result['engine_version'], '0.4.1')
 
     def test_complete_run_includes_fractional_benchmark_with_matching_timing_and_costs(self):
         config = BacktestConfig('2026-09-01', '2026-09-30')
