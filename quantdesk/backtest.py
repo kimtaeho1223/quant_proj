@@ -16,7 +16,7 @@ from quantdesk.backtest_metrics import MetricError, build_comparison, performanc
 from quantdesk.real_ranking import candidate_universe, select_statement
 
 
-ENGINE_VERSION = '0.4.0'
+ENGINE_VERSION = '0.4.1'
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ def _blocking_actions(dataset, start, end):
     if not required.issubset(actions.columns):
         return [{'reason': '기업행사 필수 열 누락'}]
     dates = pd.to_datetime(actions.effective_date, errors='coerce').dt.strftime('%Y-%m-%d')
-    mask = dates.between(start, end) & actions.status.ne('validated')
+    mask = dates.between(start, end)
     return _records(actions.loc[mask].assign(effective_date=dates.loc[mask]))
 
 
@@ -245,8 +245,11 @@ def run_backtest(dataset, config, external_cashflows=None):
     if blocking_actions:
         return _empty_result(
             dataset, config,
-            issues=[f'검증되지 않은 기업행사: {item.get("code", "알 수 없음")}'
-                    for item in blocking_actions],
+            issues=[
+                f'{"계산에 반영되지 않은" if item.get("status") == "validated" else "검증되지 않은"} '
+                f'기업행사: {item.get("code", "알 수 없음")}'
+                for item in blocking_actions
+            ],
             audit=[{'blocking_corporate_actions': blocking_actions}],
         )
 
