@@ -1,8 +1,10 @@
 """Fail-closed, source-verified split accounting primitives."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 
 import pandas as pd
 
@@ -30,6 +32,46 @@ class SplitEvent:
     ratio: Decimal
     status: str
     source_fingerprint: str
+
+
+@dataclass(frozen=True)
+class ResearchActionContext:
+    evidence: tuple[PriceBasisEvidence, ...]
+    events: tuple[SplitEvent, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, 'evidence', tuple(self.evidence))
+        object.__setattr__(self, 'events', tuple(self.events))
+        codes = [item.code for item in self.evidence]
+        if len(codes) != len(set(codes)):
+            raise CorporateActionError('duplicate price basis evidence')
+        keys = []
+        for event in self.events:
+            validate_split_event(event)
+            keys.append((event.code, event.effective_date))
+        if len(keys) != len(set(keys)):
+            raise CorporateActionError('duplicate effective-date split event')
+
+    def evidence_for(self, code: str) -> PriceBasisEvidence:
+        matching = [item for item in self.evidence if item.code == code]
+        if len(matching) != 1:
+            raise CorporateActionError(f'{code}: price basis evidence is missing')
+        require_raw_basis(matching[0], code)
+        return matching[0]
+
+    def events_for(self, code: str) -> tuple[SplitEvent, ...]:
+        return tuple(sorted((event for event in self.events if event.code == code),
+                            key=lambda item: (item.effective_date, item.source_fingerprint)))
+
+    def fingerprint(self) -> str:
+        payload = {
+            'evidence': [asdict(item) for item in sorted(self.evidence, key=lambda item: item.code)],
+            'events': [asdict(item) for item in sorted(
+                self.events, key=lambda item: (item.code, item.effective_date, item.source_fingerprint)
+            )],
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+        return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 
 
 def _required(value: str, name: str) -> str:

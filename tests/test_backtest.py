@@ -1,10 +1,33 @@
 import json
 import unittest
+from decimal import Decimal
 
 import pandas as pd
 
 from quantdesk.backtest import BacktestConfig, run_backtest
+from quantdesk.corporate_actions import PriceBasisEvidence, ResearchActionContext, SplitEvent
 from tests.backtest_fixtures import FakeInvestabilityAdapter, three_week_fixture
+
+
+def raw_evidence(**changes):
+    fields = dict(
+        code='000001', basis='raw', provider='test-provider',
+        retrieved_at='2026-10-06T12:00:00+09:00', source_version='v1',
+        fingerprint='sha256:example',
+    )
+    fields.update(changes)
+    return PriceBasisEvidence(**fields)
+
+
+def split_event(**changes):
+    fields = dict(
+        code='000001', effective_date='2026-09-25',
+        published_at='2026-09-24T16:00:00+09:00', action_type='split',
+        ratio=Decimal('2'), status='validated',
+        source_fingerprint='sha256:action',
+    )
+    fields.update(changes)
+    return SplitEvent(**fields)
 
 
 class BacktestTests(unittest.TestCase):
@@ -85,6 +108,46 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(result['status'], 'incomplete')
         self.assertTrue(any('계산에 반영되지 않은 기업행사' in issue for issue in result['issues']))
         self.assertNotIn('metrics', result)
+
+    def test_research_context_must_match_dataset_actions(self):
+        config = BacktestConfig('2026-09-01', '2026-09-30')
+        dataset = three_week_fixture(corporate_action_status='validated')
+        matching = split_event(effective_date='2026-09-15')
+        for events in ((), (matching, split_event(code='000002'))):
+            with self.subTest(events=events):
+                context = ResearchActionContext(evidence=(raw_evidence(),), events=events)
+                result = run_backtest(dataset, config, research_actions=context)
+                self.assertEqual(result['status'], 'incomplete')
+                self.assertNotIn('metrics', result)
+                self.assertTrue(any('입력과 데이터셋이 일치하지' in issue for issue in result['issues']))
+
+    def test_research_context_rejects_invalid_dataset_action_date(self):
+        dataset = three_week_fixture(corporate_action_status='validated')
+        dataset.corporate_actions.loc[0, 'effective_date'] = 'not-a-date'
+        context = ResearchActionContext(evidence=(), events=())
+
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+            research_actions=context,
+        )
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('행사일이 올바르지' in issue for issue in result['issues']))
+        self.assertNotIn('metrics', result)
+
+    def test_research_context_rejects_unknown_price_basis(self):
+        dataset = three_week_fixture(corporate_action_status='validated')
+        context = ResearchActionContext(
+            evidence=(raw_evidence(basis='unknown'),),
+            events=(split_event(effective_date='2026-09-15'),),
+        )
+        result = run_backtest(
+            dataset, BacktestConfig('2026-09-01', '2026-09-30'),
+            research_actions=context,
+        )
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertNotIn('metrics', result)
+        self.assertTrue(any('가격 기준' in issue for issue in result['issues']))
 
     def test_unvalidated_corporate_action_in_warmup_stops_official_result(self):
         dataset = three_week_fixture()

@@ -6,6 +6,7 @@ import pandas as pd
 from quantdesk.corporate_actions import (
     CorporateActionError,
     PriceBasisEvidence,
+    ResearchActionContext,
     SplitEvent,
     convert_split_position,
     require_raw_basis,
@@ -154,6 +155,32 @@ class PositionConversionTests(unittest.TestCase):
             bad.loc[1, column] = 0
             with self.subTest(column=column), self.assertRaises(CorporateActionError):
                 require_event_date_raw_bar(bad, raw_evidence(), split_event())
+
+
+class ResearchContextTests(unittest.TestCase):
+    def test_fingerprint_is_independent_of_event_order(self):
+        first = split_event()
+        second = split_event(code='000002', effective_date='2026-09-28',
+                             source_fingerprint='sha256:second')
+        left = ResearchActionContext(
+            evidence=(raw_evidence(), raw_evidence(code='000002')),
+            events=(first, second),
+        )
+        right = ResearchActionContext(
+            evidence=(raw_evidence(code='000002'), raw_evidence()),
+            events=(second, first),
+        )
+        self.assertEqual(left.fingerprint(), right.fingerprint())
+        self.assertEqual(left.evidence_for('000001'), raw_evidence())
+        self.assertEqual(left.events_for('000001'), (first,))
+
+    def test_duplicate_event_and_missing_basis_are_rejected(self):
+        with self.assertRaises(CorporateActionError):
+            ResearchActionContext(evidence=(raw_evidence(),),
+                                  events=(split_event(), split_event()))
+        context = ResearchActionContext(evidence=(), events=(split_event(),))
+        with self.assertRaises(CorporateActionError):
+            context.evidence_for('000001')
 
 
 if __name__ == '__main__':

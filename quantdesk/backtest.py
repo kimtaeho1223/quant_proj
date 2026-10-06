@@ -1,11 +1,13 @@
 """Weekly point-in-time backtest orchestration."""
 from dataclasses import asdict, dataclass
 import json
+import hashlib
 import math
 
 import pandas as pd
 
 from quantdesk.backtest_data import BacktestDataError, rank_week
+from quantdesk.corporate_actions import CorporateActionError, ResearchActionContext
 from quantdesk.backtest_execution import (
     BacktestExecutionError,
     execute_rebalance,
@@ -102,9 +104,31 @@ def _blocking_actions(dataset, start, end):
     required = {'code', 'effective_date', 'action_type', 'status'}
     if not required.issubset(actions.columns):
         return [{'reason': '기업행사 필수 열 누락'}]
-    dates = pd.to_datetime(actions.effective_date, errors='coerce').dt.strftime('%Y-%m-%d')
+    parsed_dates = pd.to_datetime(actions.effective_date, errors='coerce')
+    if parsed_dates.isna().any():
+        return [{'reason': '기업행사일이 올바르지 않습니다.'}]
+    dates = parsed_dates.dt.strftime('%Y-%m-%d')
     mask = dates.between(start, end)
     return _records(actions.loc[mask].assign(effective_date=dates.loc[mask]))
+
+
+def _validate_research_actions(dataset, context, start, end):
+    if not isinstance(context, ResearchActionContext):
+        raise CorporateActionError('기업행사 연구용 입력 형식이 올바르지 않습니다.')
+    rows = _blocking_actions(dataset, start, end)
+    required = {'code', 'effective_date', 'action_type', 'status'}
+    if any(not required.issubset(row) for row in rows):
+        raise CorporateActionError(rows[0].get('reason', '기업행사 필수 열이 없습니다.'))
+    actual = [tuple(str(row[key]) for key in ('code', 'effective_date', 'action_type', 'status'))
+              for row in rows]
+    expected = [
+        (event.code, event.effective_date, event.action_type, event.status)
+        for event in context.events if start <= event.effective_date <= end
+    ]
+    if len(actual) != len(set(actual)) or sorted(actual) != sorted(expected):
+        raise CorporateActionError('기업행사 검증용 입력과 데이터셋이 일치하지 않습니다.')
+    for event in context.events:
+        context.evidence_for(event.code)
 
 
 def _run_fractional_benchmark(dataset, config, schedule, cost_model):
@@ -217,7 +241,7 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
     }
 
 
-def run_backtest(dataset, config, external_cashflows=None):
+def run_backtest(dataset, config, external_cashflows=None, *, research_actions=None):
     flows = _cashflows(external_cashflows)
     schedule = dataset.schedule(config.start, config.end)
     schedule = schedule[schedule.execution_date <= config.end].reset_index(drop=True)
@@ -242,6 +266,21 @@ def run_backtest(dataset, config, external_cashflows=None):
     signal_history = dataset.calendar[dataset.calendar.date <= first_signal].date.tolist()
     validation_start = signal_history[-252] if len(signal_history) >= 252 else signal_history[0]
     blocking_actions = _blocking_actions(dataset, validation_start, config.end)
+    if research_actions is not None:
+        try:
+            _validate_research_actions(dataset, research_actions, validation_start, config.end)
+        except CorporateActionError as exc:
+            return _empty_result(dataset, config, issues=[f'기업행사 가격 기준 또는 증거 오류: {exc}'])
+        context_fingerprint = research_actions.fingerprint()
+        run_fingerprint = hashlib.sha256(
+            f'{dataset.fingerprint()}:{context_fingerprint}'.encode('utf-8')
+        ).hexdigest()
+        result = _empty_result(
+            dataset, config, issues=['기업행사 연구용 계산이 아직 연결되지 않았습니다.'],
+            audit=[{'research_action_context_fingerprint': context_fingerprint}],
+        )
+        result['fingerprint'] = run_fingerprint
+        return result
     if blocking_actions:
         return _empty_result(
             dataset, config,
