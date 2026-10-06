@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-06-corporate-action-engine-integration-design.md`
 
+## Progress (2026-10-06)
+
+- Task 1 complete in `249d169`: explicit research context, canonical fingerprint, dataset-action matching, invalid-date rejection, and unchanged ordinary guard. `python -m unittest tests.test_corporate_actions tests.test_backtest -q` passed 34 tests.
+- Task 2 complete in `90065d7`: only copied ranking-history closes are adjusted; original OHLC and execution opens remain raw. `python -m unittest tests.test_backtest_data -q` passed 15 tests.
+- Tasks 3 and 4 have not started. `run_backtest(..., research_actions=...)` intentionally returns `incomplete` with a research-only issue before running NAV. Do not remove that early return until strategy and benchmark conversion and final lock tests are ready.
+- `README.md` and `docs/investability-official-audit.md` are pre-existing uncommitted changes; preserve them.
+
 ## Global Constraints
 
 - `ratio` is new shares / old shares; use existing `quantdesk.corporate_actions` validators and conversion functions.
@@ -45,10 +52,10 @@
 - A supplied context must match the dataset's action rows by `(code, effective_date, action_type, status)` within the validation window. Reject missing, extra, duplicate, unsupported, or conflicting rows. Require verified raw evidence for every affected code. Keep the no-context guard unchanged.
 - Include the context fingerprint in research input fingerprint/audit without changing ordinary dataset fingerprint behavior.
 
-- [ ] **Step 1: Write failing tests.** Verify canonical fingerprints ignore tuple order, missing/extra event blocks, duplicate event blocks, unknown basis blocks, and a no-context validated action still returns `incomplete` without metrics.
-- [ ] **Step 2: Run `python -m unittest tests.test_corporate_actions tests.test_backtest -q`.** Expect the new tests to fail.
-- [ ] **Step 3: Implement context validation and dispatch.** Validate all rows before starting NAV; use an internal research path rather than changing Streamlit's call. Explicit context alone never makes a run official.
-- [ ] **Step 4: Rerun the Task 1 tests.** Expect PASS; commit only these files.
+- [x] **Step 1: Write failing tests.** Verify canonical fingerprints ignore tuple order, missing/extra event blocks, duplicate event blocks, unknown basis blocks, and a no-context validated action still returns `incomplete` without metrics.
+- [x] **Step 2: Run `python -m unittest tests.test_corporate_actions tests.test_backtest -q`.** Expect the new tests to fail.
+- [x] **Step 3: Implement context validation and dispatch.** Validate all rows before starting NAV; use an internal research path rather than changing Streamlit's call. Explicit context alone never makes a run official.
+- [x] **Step 4: Rerun the Task 1 tests.** Expect PASS; commit only these files.
 
 ### Task 2: Point-in-Time Ranking History
 
@@ -62,10 +69,10 @@
 - Extend `BacktestDataset.week_inputs(signal_date, research_actions: ResearchActionContext | None = None)` and `rank_week(dataset, signal_date, minimum_ready=80, research_actions=None)`.
 - In `week_inputs`, copy the full history frame for each affected code and replace only that copy's `Close` values using `split_adjusted_closes(..., signal_at=f'{signal}T15:30:00+09:00')`; preserve its `Date` and `Open` columns, and do not alter `self.prices` or `execution_open`.
 
-- [ ] **Step 1: Write failing tests.** Raw 100/50 across 2-for-1 appears 50/50 to ranking after publication; earlier signal remains raw; late publication blocks; original prices and execution open remain raw; missing evidence blocks.
-- [ ] **Step 2: Run the focused ranking tests.** Expect FAIL.
-- [ ] **Step 3: Implement the optional ranking-history view.** Pass the context from the research engine call; use existing pure price-view helper.
-- [ ] **Step 4: Rerun focused tests and existing `tests.test_backtest_data`.** Expect PASS; commit only these files.
+- [x] **Step 1: Write failing tests.** Raw 100/50 across 2-for-1 appears 50/50 to ranking after publication; earlier signal remains raw; late publication blocks; original prices and execution open remain raw; missing evidence blocks.
+- [x] **Step 2: Run the focused ranking tests.** Expect FAIL.
+- [x] **Step 3: Implement the optional ranking-history view.** Pass the context from the research engine call; use existing pure price-view helper.
+- [x] **Step 4: Rerun focused tests and existing `tests.test_backtest_data`.** Expect PASS; commit only these files.
 
 ### Task 3: Whole-Share Strategy Conversion and Audit
 
