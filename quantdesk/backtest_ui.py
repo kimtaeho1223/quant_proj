@@ -53,7 +53,9 @@ def readiness_report(dataset, config):
         'corporate_action': None,
         'official_backtest': None,
     }
-    if adapter_readiness is not None:
+    if adapter_readiness is None:
+        issues.append(_issue('투자 가능성', '공식 상태 자료가 연결되지 않았습니다.'))
+    else:
         readiness_labels = {
             'lifecycle': bool(adapter_readiness.get('lifecycle_ready', False)),
             'investability': bool(adapter_readiness.get('investability_ready', False)),
@@ -140,6 +142,10 @@ def render_backtest_result(result, run_id):
     if result['status'] != 'complete':
         st.error('백테스트가 완전하게 끝나지 않아 공식 성과 지표를 표시하지 않습니다.')
         _display_frame([{'내용': item} for item in result.get('issues', [])])
+        return
+    readiness = result.get('investability_readiness') or {}
+    if not readiness.get('official_backtest_ready', False):
+        st.error('공식 상태 검증이 없어 공식 성과 지표를 표시하지 않습니다.')
         return
 
     performance, portfolio, trades, audit = st.tabs(
