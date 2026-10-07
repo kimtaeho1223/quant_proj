@@ -1,5 +1,7 @@
 """Weekly point-in-time backtest orchestration."""
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from decimal import Decimal
 import json
 import hashlib
 import math
@@ -7,7 +9,12 @@ import math
 import pandas as pd
 
 from quantdesk.backtest_data import BacktestDataError, rank_week
-from quantdesk.corporate_actions import CorporateActionError, ResearchActionContext
+from quantdesk.corporate_actions import (
+    CorporateActionError,
+    ResearchActionContext,
+    convert_split_position,
+    require_event_date_raw_bar,
+)
 from quantdesk.backtest_execution import (
     BacktestExecutionError,
     execute_rebalance,
@@ -129,6 +136,85 @@ def _validate_research_actions(dataset, context, start, end):
         raise CorporateActionError('기업행사 검증용 입력과 데이터셋이 일치하지 않습니다.')
     for event in context.events:
         context.evidence_for(event.code)
+
+
+RESEARCH_ONLY_ISSUE = '기업행사 연구용 계산 결과이며 공식 성과가 아닙니다.'
+
+
+def _event_fingerprint(event):
+    encoded = json.dumps(asdict(event), sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def _event_key(event):
+    return (event.code, event.effective_date, _event_fingerprint(event))
+
+
+def _split_between(research_actions, code, after, upto):
+    if research_actions is None:
+        return False
+    return any(after < event.effective_date <= upto for event in research_actions.events_for(code))
+
+
+def _apply_research_splits(holdings, last_valid, date, dataset, research_actions, applied,
+                           *, fractional, portfolio):
+    """Convert held quantities for splits effective on or before ``date``.
+
+    The conversion is an accounting event only: it never creates an order,
+    cash movement, cost, or turnover. ``applied`` is updated in place so each
+    event is processed exactly once per portfolio.
+    """
+    holdings = dict(holdings)
+    last_valid = dict(last_valid)
+    audit = []
+    if research_actions is None:
+        return holdings, last_valid, audit
+    pending = sorted(
+        (event for event in research_actions.events
+         if event.effective_date <= date and _event_key(event) not in applied),
+        key=lambda event: (event.effective_date, event.code, event.source_fingerprint),
+    )
+    for event in pending:
+        quantity = holdings.get(event.code, 0)
+        if quantity and quantity > 0:
+            evidence = research_actions.evidence_for(event.code)
+            open_at = datetime.fromisoformat(f'{event.effective_date}T09:00:00+09:00')
+            if datetime.fromisoformat(event.published_at) > open_at:
+                raise CorporateActionError(
+                    f'{event.code}: 효력일 장 시작 전에 공개되지 않은 기업행사입니다.'
+                )
+            prices = dataset.prices.get(event.code)
+            if prices is None:
+                raise CorporateActionError(f'{event.code}: 효력일 원본 가격이 없습니다.')
+            raw_open, raw_close = require_event_date_raw_bar(prices, evidence, event)
+            if fractional:
+                old = Decimal(str(quantity))
+                new = convert_split_position(old, event, fractional=True)
+                holdings[event.code] = float(new)
+            else:
+                if isinstance(quantity, bool) or int(quantity) != quantity:
+                    raise CorporateActionError(f'{event.code}: 보유 수량이 정수가 아닙니다.')
+                old = int(quantity)
+                new = convert_split_position(old, event, fractional=False)
+                holdings[event.code] = new
+            last_valid.pop(event.code, None)
+            audit.append({
+                'portfolio': portfolio,
+                'code': event.code,
+                'action_type': event.action_type,
+                'ratio': str(event.ratio),
+                'effective_date': event.effective_date,
+                'published_at': event.published_at,
+                'applied_on': date,
+                'event_fingerprint': _event_fingerprint(event),
+                'source_fingerprint': event.source_fingerprint,
+                'old_quantity': old,
+                'new_quantity': new,
+                'raw_open': raw_open,
+                'raw_close': raw_close,
+            })
+        applied.add(_event_key(event))
+    return holdings, last_valid, audit
 
 
 def _run_fractional_benchmark(dataset, config, schedule, cost_model):
@@ -271,16 +357,11 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
             _validate_research_actions(dataset, research_actions, validation_start, config.end)
         except CorporateActionError as exc:
             return _empty_result(dataset, config, issues=[f'기업행사 가격 기준 또는 증거 오류: {exc}'])
-        context_fingerprint = research_actions.fingerprint()
-        run_fingerprint = hashlib.sha256(
-            f'{dataset.fingerprint()}:{context_fingerprint}'.encode('utf-8')
-        ).hexdigest()
-        result = _empty_result(
-            dataset, config, issues=['기업행사 연구용 계산이 아직 연결되지 않았습니다.'],
-            audit=[{'research_action_context_fingerprint': context_fingerprint}],
+        result = _simulate(
+            dataset, config, flows, schedule, adapter, policy_id,
+            investability_readiness, research_actions,
         )
-        result['fingerprint'] = run_fingerprint
-        return result
+        return _lock_research_result(dataset, result, research_actions)
     if blocking_actions:
         return _empty_result(
             dataset, config,
@@ -291,6 +372,38 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
             ],
             audit=[{'blocking_corporate_actions': blocking_actions}],
         )
+    return _simulate(
+        dataset, config, flows, schedule, adapter, policy_id,
+        investability_readiness, None,
+    )
+
+
+def _lock_research_result(dataset, result, research_actions):
+    """A research run never becomes an official result, whatever it computed."""
+    context_fingerprint = research_actions.fingerprint()
+    result['fingerprint'] = hashlib.sha256(
+        f'{dataset.fingerprint()}:{context_fingerprint}'.encode('utf-8')
+    ).hexdigest()
+    result['research_action_context_fingerprint'] = context_fingerprint
+    result['audit'] = [{'research_action_context_fingerprint': context_fingerprint}, *result['audit']]
+    result['status'] = 'incomplete'
+    if RESEARCH_ONLY_ISSUE not in result['issues']:
+        result['issues'].append(RESEARCH_ONLY_ISSUE)
+    for key in ('metrics', 'benchmark_metrics', 'comparison'):
+        result.pop(key, None)
+    return result
+
+
+def _simulate(dataset, config, flows, schedule, adapter, policy_id,
+              investability_readiness, research_actions):
+    corporate_action_audit = []
+    applied_splits = set()
+
+    def stop(**rows):
+        result = _empty_result(dataset, config, **rows)
+        if research_actions is not None:
+            result['corporate_action_audit'] = corporate_action_audit
+        return result
 
     holdings = {}
     cash = float(config.initial_cash)
@@ -324,8 +437,8 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
             )
         except (BacktestDataError, ValueError) as exc:
             issues.append(f'{signal}: {exc}')
-            return _empty_result(dataset, config, issues=issues, nav=nav_rows,
-                                 weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+            return stop(issues=issues, nav=nav_rows,
+                        weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
 
         blocking = [issue for issue in week['issues'] if issue.startswith('유효 후보 ')]
         if blocking:
@@ -341,11 +454,21 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
                 'investability_signal': _records(week.get('investability_signal')),
                 'execution_rejections': [],
             })
-            return _empty_result(dataset, config, issues=issues, nav=nav_rows,
-                                 weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+            return stop(issues=issues, nav=nav_rows,
+                        weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
 
         signal_timestamp = f'{signal}T15:30:00+09:00'
         execution_timestamp = f'{execution_date}T09:00:00+09:00'
+        try:
+            holdings, last_valid, converted = _apply_research_splits(
+                holdings, last_valid, execution_date, dataset, research_actions,
+                applied_splits, fractional=False, portfolio='strategy',
+            )
+        except CorporateActionError as exc:
+            issues.append(f'{execution_date}: 기업행사 수량 변환 차단: {exc}')
+            return stop(issues=issues, nav=nav_rows,
+                        weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+        corporate_action_audit.extend(converted)
         security_ids.update(week.get('investability_by_code', {}))
         holdings_before = dict(holdings)
         blocked_orders = {}
@@ -384,12 +507,14 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
             )
         except BacktestExecutionError as exc:
             issues.append(f'{signal}: {exc}')
-            return _empty_result(dataset, config, issues=issues, nav=nav_rows,
-                                 weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+            return stop(issues=issues, nav=nav_rows,
+                        weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
 
         holdings = execution['holdings_after']
         cash = execution['cash_after']
         for code in holdings:
+            if _split_between(research_actions, code, signal, execution_date):
+                continue
             close = _price_on(dataset, code, signal, 'Close')
             if close is not None:
                 last_valid[code] = close
@@ -470,6 +595,16 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
             daily_flows = flows[flows.date == date]
             external_flow = float(daily_flows.amount.sum()) if not daily_flows.empty else 0.0
             cash += external_flow
+            try:
+                holdings, last_valid, converted = _apply_research_splits(
+                    holdings, last_valid, date, dataset, research_actions,
+                    applied_splits, fractional=False, portfolio='strategy',
+                )
+            except CorporateActionError as exc:
+                issues.append(f'{date}: 기업행사 수량 변환 차단: {exc}')
+                return stop(issues=issues, nav=nav_rows,
+                            weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+            corporate_action_audit.extend(converted)
             closes = {
                 code: price for code in holdings
                 if (price := _price_on(dataset, code, date, 'Close')) is not None
@@ -478,8 +613,8 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
                 valuation = value_portfolio(holdings, cash, closes, last_valid)
             except BacktestExecutionError as exc:
                 issues.append(f'{date}: {exc}')
-                return _empty_result(dataset, config, issues=issues, nav=nav_rows,
-                                     weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
+                return stop(issues=issues, nav=nav_rows,
+                            weekly=weekly_rows, trades=trade_rows, audit=audit_rows)
             last_valid = valuation['last_valid_prices']
             nav_rows.append({
                 'date': date,
@@ -494,6 +629,11 @@ def run_backtest(dataset, config, external_cashflows=None, *, research_actions=N
         dataset, config, status='complete', issues=issues,
         nav=nav_rows, weekly=weekly_rows, trades=trade_rows, audit=audit_rows,
     )
+    if research_actions is not None:
+        result['corporate_action_audit'] = corporate_action_audit
+        result['status'] = 'incomplete'
+        result['issues'].append('벤치마크 기업행사 계산이 아직 연결되지 않았습니다.')
+        return result
     benchmark = _run_fractional_benchmark(dataset, config, schedule, cost_model)
     result['benchmark'] = benchmark
     if benchmark['status'] != 'complete':

@@ -4,9 +4,13 @@ from decimal import Decimal
 
 import pandas as pd
 
-from quantdesk.backtest import BacktestConfig, run_backtest
-from quantdesk.corporate_actions import PriceBasisEvidence, ResearchActionContext, SplitEvent
-from tests.backtest_fixtures import FakeInvestabilityAdapter, three_week_fixture
+from quantdesk.backtest import BacktestConfig, _apply_research_splits, run_backtest
+from quantdesk.corporate_actions import (
+    CorporateActionError, PriceBasisEvidence, ResearchActionContext, SplitEvent,
+)
+from tests.backtest_fixtures import (
+    FakeInvestabilityAdapter, dataset_fixture, three_week_fixture,
+)
 
 
 def raw_evidence(**changes):
@@ -28,6 +32,167 @@ def split_event(**changes):
     )
     fields.update(changes)
     return SplitEvent(**fields)
+
+
+RUN_CONFIG = BacktestConfig('2026-09-01', '2026-09-30')
+HELD_CODE = '000100'
+BENCHMARK_ONLY_CODE = '000001'
+_BASELINE = {}
+
+
+def baseline_result():
+    if 'result' not in _BASELINE:
+        _BASELINE['result'] = run_backtest(three_week_fixture(), RUN_CONFIG)
+    return _BASELINE['result']
+
+
+def split_scenario(code=HELD_CODE, effective_date='2026-09-16',
+                   published_at='2026-09-15T18:00:00+09:00', action_type='split',
+                   ratio=Decimal('2'), drop_event_bar=False):
+    """Synthetic raw prices that move by the action ratio at the effective open."""
+    dataset = three_week_fixture()
+    frame = dataset.prices[code].copy()
+    frame[['Open', 'Close']] = frame[['Open', 'Close']].astype(float)
+    after = frame.Date >= effective_date
+    frame.loc[after, ['Open', 'Close']] = frame.loc[after, ['Open', 'Close']] / float(ratio)
+    if drop_event_bar:
+        frame = frame[frame.Date != effective_date]
+    dataset.prices[code] = frame.reset_index(drop=True)
+    dataset.corporate_actions = pd.DataFrame([{
+        'code': code, 'effective_date': effective_date,
+        'action_type': action_type, 'status': 'validated',
+    }])
+    context = ResearchActionContext(
+        evidence=(raw_evidence(code=code),),
+        events=(split_event(
+            code=code, effective_date=effective_date, published_at=published_at,
+            action_type=action_type, ratio=ratio,
+        ),),
+    )
+    return dataset, context
+
+
+def strategy_quantity(result, execution_date, code):
+    weekly = result['weekly'].set_index('execution_date')
+    return json.loads(weekly.loc[execution_date, 'holdings']).get(code, 0)
+
+
+class ResearchSplitStrategyTests(unittest.TestCase):
+    def test_helper_converts_whole_shares_without_cash_and_drops_carried_close(self):
+        dataset = dataset_fixture()
+        frame = dataset.prices['000001'].copy()
+        frame[['Open', 'Close']] = [[100.0, 100.0], [50.0, 50.0], [51.0, 52.0]]
+        dataset.prices['000001'] = frame
+        context = ResearchActionContext(evidence=(raw_evidence(),), events=(split_event(),))
+        applied = set()
+
+        holdings, last_valid, audit = _apply_research_splits(
+            {'000001': 10}, {'000001': 100.0}, '2026-09-25', dataset, context, applied,
+            fractional=False, portfolio='strategy',
+        )
+
+        self.assertEqual(holdings, {'000001': 20})
+        self.assertIsInstance(holdings['000001'], int)
+        self.assertNotIn('000001', last_valid)
+        self.assertEqual(len(audit), 1)
+        row = audit[0]
+        self.assertEqual((row['old_quantity'], row['new_quantity']), (10, 20))
+        self.assertEqual((row['raw_open'], row['raw_close']), (50.0, 50.0))
+        self.assertEqual(row['effective_date'], '2026-09-25')
+        self.assertEqual(row['portfolio'], 'strategy')
+        self.assertTrue(row['event_fingerprint'])
+        for key in ('cash_delta', 'fee', 'tax', 'slippage', 'gross_amount'):
+            self.assertNotIn(key, row)
+
+        again = _apply_research_splits(
+            holdings, last_valid, '2026-09-28', dataset, context, applied,
+            fractional=False, portfolio='strategy',
+        )
+        self.assertEqual(again[0], {'000001': 20})
+        self.assertEqual(again[2], [])
+
+    def test_helper_blocks_fractional_whole_share_entitlement(self):
+        dataset = dataset_fixture()
+        reverse = split_event(action_type='reverse_split', ratio=Decimal('0.5'))
+        context = ResearchActionContext(evidence=(raw_evidence(),), events=(reverse,))
+
+        with self.assertRaises(CorporateActionError):
+            _apply_research_splits(
+                {'000001': 5}, {}, '2026-09-25', dataset, context, set(),
+                fractional=False, portfolio='strategy',
+            )
+
+    def test_helper_blocks_publication_after_effective_open(self):
+        dataset = dataset_fixture()
+        late = split_event(published_at='2026-09-25T09:00:01+09:00')
+        context = ResearchActionContext(evidence=(raw_evidence(),), events=(late,))
+
+        with self.assertRaises(CorporateActionError):
+            _apply_research_splits(
+                {'000001': 10}, {}, '2026-09-25', dataset, context, set(),
+                fractional=False, portfolio='strategy',
+            )
+
+    def test_split_between_rebalances_converts_before_daily_valuation(self):
+        baseline = baseline_result()
+        dataset, context = split_scenario()
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        before = strategy_quantity(baseline, '2026-09-14', HELD_CODE)
+        self.assertGreater(before, 0)
+        conversions = [row for row in result['corporate_action_audit']
+                       if row['portfolio'] == 'strategy']
+        self.assertEqual(len(conversions), 1)
+        self.assertEqual(conversions[0]['applied_on'], '2026-09-16')
+        self.assertEqual(conversions[0]['old_quantity'], before)
+        self.assertEqual(conversions[0]['new_quantity'], before * 2)
+        compared = baseline['nav'][baseline['nav'].date <= '2026-09-18']
+        research_nav = result['nav'].set_index('date')
+        for row in compared.itertuples(index=False):
+            self.assertAlmostEqual(research_nav.loc[row.date, 'equity'], row.equity, places=6)
+            self.assertAlmostEqual(research_nav.loc[row.date, 'cash'], row.cash, places=6)
+        self.assertEqual(research_nav.loc['2026-09-16', 'carried_prices'], 0)
+        early = lambda frame: frame[frame.execution_date <= '2026-09-14'].to_dict('records')
+        self.assertEqual(early(result['trades']), early(baseline['trades']))
+        self.assertFalse(result['trades'].execution_date.isin(['2026-09-16']).any())
+        self.assertEqual(result['status'], 'incomplete')
+        for key in ('metrics', 'benchmark_metrics', 'comparison'):
+            self.assertNotIn(key, result)
+
+    def test_rebalance_date_split_converts_once_before_execution(self):
+        dataset, context = split_scenario(
+            effective_date='2026-09-14', published_at='2026-09-11T18:00:00+09:00',
+        )
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        conversions = [row for row in result['corporate_action_audit']
+                       if row['portfolio'] == 'strategy']
+        self.assertEqual(len(conversions), 1)
+        self.assertEqual(conversions[0]['applied_on'], '2026-09-14')
+        self.assertEqual(conversions[0]['old_quantity'],
+                         strategy_quantity(baseline_result(), '2026-09-07', HELD_CODE))
+        self.assertTrue(result['nav'].date.eq('2026-09-30').any())
+        self.assertNotIn('metrics', result)
+
+    def test_blocking_split_inputs_return_no_metrics(self):
+        quantity = strategy_quantity(baseline_result(), '2026-09-14', HELD_CODE)
+        self.assertEqual(quantity % 2, 1)
+        cases = {
+            'fractional': dict(action_type='reverse_split', ratio=Decimal('0.5')),
+            'missing_bar': dict(drop_event_bar=True),
+            'late_publication': dict(published_at='2026-09-16T10:00:00+09:00'),
+        }
+        for name, changes in cases.items():
+            with self.subTest(name):
+                dataset, context = split_scenario(**changes)
+                result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+                self.assertEqual(result['status'], 'incomplete')
+                self.assertTrue(any('기업행사' in issue for issue in result['issues']))
+                for key in ('metrics', 'benchmark_metrics', 'comparison'):
+                    self.assertNotIn(key, result)
+                self.assertFalse(result['nav'].date.gt('2026-09-16').any())
 
 
 class BacktestTests(unittest.TestCase):
