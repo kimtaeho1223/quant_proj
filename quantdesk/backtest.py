@@ -217,8 +217,29 @@ def _apply_research_splits(holdings, last_valid, date, dataset, research_actions
     return holdings, last_valid, audit
 
 
-def _run_fractional_benchmark(dataset, config, schedule, cost_model):
+def _run_fractional_benchmark(dataset, config, schedule, cost_model, research_actions=None):
     holdings = {}
+    applied_splits = set()
+    corporate_action_audit = []
+
+    def finish(status):
+        output = {
+            'status': status, 'nav': pd.DataFrame(nav_rows),
+            'weekly': pd.DataFrame(weekly_rows), 'trades': pd.DataFrame(trade_rows),
+            'issues': issues, 'cost_model': dict(cost_model), 'method': 'fractional_equal_weight',
+        }
+        if research_actions is not None:
+            output['corporate_action_audit'] = corporate_action_audit
+        return output
+
+    def convert(date):
+        nonlocal holdings, last_valid
+        holdings, last_valid, converted = _apply_research_splits(
+            holdings, last_valid, date, dataset, research_actions, applied_splits,
+            fractional=True, portfolio='benchmark',
+        )
+        corporate_action_audit.extend(converted)
+
     cash = float(config.initial_cash)
     last_valid = {}
     nav_rows = [{
@@ -233,17 +254,18 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
         execution_date = row.execution_date
         listing = candidate_universe(dataset.snapshots[signal])
         targets = listing.Code.tolist()
+        try:
+            convert(execution_date)
+        except CorporateActionError as exc:
+            issues.append(f'{execution_date}: 벤치마크 기업행사 수량 변환 차단: {exc}')
+            return finish('incomplete')
         opens = {code: _price_on(dataset, code, execution_date, 'Open') for code in targets}
         for code in holdings:
             opens[code] = _price_on(dataset, code, execution_date, 'Open')
         missing = [code for code, price in opens.items() if price is None]
         if missing:
             issues.append(f'{signal}: 벤치마크 시가 없음 {len(missing)}종목')
-            return {
-                'status': 'incomplete', 'nav': pd.DataFrame(nav_rows),
-                'weekly': pd.DataFrame(weekly_rows), 'trades': pd.DataFrame(trade_rows),
-                'issues': issues, 'cost_model': dict(cost_model), 'method': 'fractional_equal_weight',
-            }
+            return finish('incomplete')
 
         equity = cash + sum(holdings[code] * opens[code] for code in holdings)
         target_value = equity / len(targets)
@@ -282,6 +304,8 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
             raise BacktestExecutionError('벤치마크 현금이 음수입니다.')
         holdings = {code: quantity for code, quantity in holdings.items() if quantity > 1e-12}
         for code in holdings:
+            if _split_between(research_actions, code, signal, execution_date):
+                continue
             close = _price_on(dataset, code, signal, 'Close')
             if close is not None:
                 last_valid[code] = close
@@ -308,6 +332,11 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
             and (next_execution is None or day < next_execution)
         ]
         for date in valuation_dates:
+            try:
+                convert(date)
+            except CorporateActionError as exc:
+                issues.append(f'{date}: 벤치마크 기업행사 수량 변환 차단: {exc}')
+                return finish('incomplete')
             closes = {
                 code: price for code in holdings
                 if (price := _price_on(dataset, code, date, 'Close')) is not None
@@ -320,11 +349,7 @@ def _run_fractional_benchmark(dataset, config, schedule, cost_model):
                 'equity': valuation['equity'], 'external_flow': 0.0,
                 'carried_prices': sum(source == 'carried' for source in valuation['price_sources'].values()),
             })
-    return {
-        'status': 'complete', 'nav': pd.DataFrame(nav_rows),
-        'weekly': pd.DataFrame(weekly_rows), 'trades': pd.DataFrame(trade_rows),
-        'issues': issues, 'cost_model': dict(cost_model), 'method': 'fractional_equal_weight',
-    }
+    return finish('complete')
 
 
 def run_backtest(dataset, config, external_cashflows=None, *, research_actions=None):
@@ -631,26 +656,26 @@ def _simulate(dataset, config, flows, schedule, adapter, policy_id,
     )
     if research_actions is not None:
         result['corporate_action_audit'] = corporate_action_audit
-        result['status'] = 'incomplete'
-        result['issues'].append('벤치마크 기업행사 계산이 아직 연결되지 않았습니다.')
-        return result
-    benchmark = _run_fractional_benchmark(dataset, config, schedule, cost_model)
+    benchmark = _run_fractional_benchmark(
+        dataset, config, schedule, cost_model, research_actions=research_actions,
+    )
     result['benchmark'] = benchmark
     if benchmark['status'] != 'complete':
         result['status'] = 'incomplete'
         result['issues'].extend(benchmark['issues'])
         return result
-    try:
-        result['metrics'] = performance_metrics(result['nav'], risk_free_rate=0.0)
-        result['benchmark_metrics'] = performance_metrics(benchmark['nav'], risk_free_rate=0.0)
-        result['comparison'] = build_comparison(
-            result['nav'], benchmark['nav'],
-            dataset.indices.get('KOSPI', pd.DataFrame()),
-            dataset.indices.get('KOSDAQ', pd.DataFrame()),
-        )
-    except MetricError as exc:
-        result['status'] = 'incomplete'
-        result['issues'].append(f'성과 지표 계산 실패: {exc}')
+    if research_actions is None:
+        try:
+            result['metrics'] = performance_metrics(result['nav'], risk_free_rate=0.0)
+            result['benchmark_metrics'] = performance_metrics(benchmark['nav'], risk_free_rate=0.0)
+            result['comparison'] = build_comparison(
+                result['nav'], benchmark['nav'],
+                dataset.indices.get('KOSPI', pd.DataFrame()),
+                dataset.indices.get('KOSDAQ', pd.DataFrame()),
+            )
+        except MetricError as exc:
+            result['status'] = 'incomplete'
+            result['issues'].append(f'성과 지표 계산 실패: {exc}')
     if investability_readiness is not None:
         result['investability_readiness'] = investability_readiness
         later_locks = []

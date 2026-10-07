@@ -195,6 +195,148 @@ class ResearchSplitStrategyTests(unittest.TestCase):
                 self.assertFalse(result['nav'].date.gt('2026-09-16').any())
 
 
+class ResearchSplitBenchmarkTests(unittest.TestCase):
+    def test_helper_keeps_exact_decimal_fractional_benchmark_quantity(self):
+        dataset = dataset_fixture()
+        reverse = split_event(action_type='reverse_split', ratio=Decimal('0.5'))
+        context = ResearchActionContext(evidence=(raw_evidence(),), events=(reverse,))
+
+        holdings, _, audit = _apply_research_splits(
+            {'000001': 5.0}, {}, '2026-09-25', dataset, context, set(),
+            fractional=True, portfolio='benchmark',
+        )
+
+        self.assertEqual(holdings, {'000001': 2.5})
+        self.assertIsInstance(holdings['000001'], float)
+        self.assertIsInstance(audit[0]['new_quantity'], Decimal)
+        self.assertEqual(audit[0]['new_quantity'], Decimal('2.5'))
+
+    def test_benchmark_converts_reverse_split_strategy_does_not_hold(self):
+        baseline = baseline_result()
+        dataset, context = split_scenario(
+            code=BENCHMARK_ONLY_CODE, action_type='reverse_split', ratio=Decimal('0.5'),
+        )
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        self.assertEqual(
+            [row for row in result['corporate_action_audit'] if row['portfolio'] == 'strategy'], [],
+        )
+        benchmark = result['benchmark']
+        rows = benchmark['corporate_action_audit']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['applied_on'], '2026-09-16')
+        self.assertIsInstance(rows[0]['old_quantity'], Decimal)
+        self.assertEqual(rows[0]['new_quantity'], rows[0]['old_quantity'] * Decimal('0.5'))
+        self.assertFalse(benchmark['trades'].execution_date.eq('2026-09-16').any())
+        expected = baseline['benchmark']['nav']
+        actual = benchmark['nav'].set_index('date')
+        for row in expected[expected.date <= '2026-09-18'].itertuples(index=False):
+            self.assertAlmostEqual(actual.loc[row.date, 'equity'], row.equity, places=4)
+            self.assertAlmostEqual(actual.loc[row.date, 'cash'], row.cash, places=6)
+
+    def test_strategy_and_benchmark_share_event_boundary_without_costs(self):
+        baseline = baseline_result()
+        dataset, context = split_scenario()
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        strategy = [row for row in result['corporate_action_audit'] if row['portfolio'] == 'strategy']
+        benchmark = result['benchmark']['corporate_action_audit']
+        self.assertEqual(len(strategy), 1)
+        self.assertEqual(len(benchmark), 1)
+        for key in ('code', 'effective_date', 'applied_on', 'ratio', 'event_fingerprint',
+                    'raw_open', 'raw_close'):
+            self.assertEqual(strategy[0][key], benchmark[0][key])
+        early = lambda frame: frame[frame.execution_date <= '2026-09-14']
+        pd.testing.assert_frame_equal(
+            early(result['benchmark']['weekly']).reset_index(drop=True),
+            early(baseline['benchmark']['weekly']).reset_index(drop=True),
+        )
+        expected = baseline['benchmark']['nav']
+        actual = result['benchmark']['nav'].set_index('date')
+        for row in expected[expected.date <= '2026-09-18'].itertuples(index=False):
+            self.assertAlmostEqual(actual.loc[row.date, 'equity'], row.equity, places=4)
+
+    def test_rebalance_date_event_is_applied_once_to_benchmark(self):
+        dataset, context = split_scenario(
+            effective_date='2026-09-14', published_at='2026-09-11T18:00:00+09:00',
+        )
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        rows = result['benchmark']['corporate_action_audit']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['applied_on'], '2026-09-14')
+
+    def test_completed_research_run_is_locked_and_reproducible(self):
+        dataset, context = split_scenario()
+
+        first = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+        second = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        self.assertEqual(first['status'], 'incomplete')
+        self.assertIn('기업행사 연구용 계산 결과이며 공식 성과가 아닙니다.', first['issues'])
+        self.assertFalse(any('연결되지 않았습니다' in issue for issue in first['issues']))
+        for key in ('metrics', 'benchmark_metrics', 'comparison'):
+            self.assertNotIn(key, first)
+        self.assertTrue(first['nav'].date.eq('2026-09-30').any())
+        self.assertTrue(first['benchmark']['nav'].date.eq('2026-09-30').any())
+        self.assertNotEqual(first['fingerprint'], dataset.fingerprint())
+        self.assertEqual(first['research_action_context_fingerprint'], context.fingerprint())
+
+        def normalized(result):
+            return json.dumps({
+                'fingerprint': result['fingerprint'],
+                'audit': result['audit'],
+                'actions': result['corporate_action_audit'],
+                'benchmark_actions': result['benchmark']['corporate_action_audit'],
+                'nav': result['nav'].to_dict('records'),
+                'benchmark_nav': result['benchmark']['nav'].to_dict('records'),
+            }, sort_keys=True, ensure_ascii=False, default=str)
+
+        self.assertEqual(normalized(first), normalized(second))
+
+    def test_benchmark_block_preserves_diagnostics_without_metrics(self):
+        dataset, context = split_scenario(
+            code=BENCHMARK_ONLY_CODE, action_type='reverse_split', ratio=Decimal('0.5'),
+            drop_event_bar=True,
+        )
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('벤치마크' in issue and '기업행사' in issue for issue in result['issues']))
+        self.assertTrue(result['nav'].date.eq('2026-09-30').any())
+        self.assertEqual(result['benchmark']['status'], 'incomplete')
+        for key in ('metrics', 'benchmark_metrics', 'comparison'):
+            self.assertNotIn(key, result)
+
+    def test_research_run_does_not_clear_investability_locks(self):
+        dataset, context = split_scenario()
+        dataset.investability_adapter = FakeInvestabilityAdapter(
+            dataset.snapshots['2026-09-04'].Code, investability_ready=True,
+        )
+
+        result = run_backtest(dataset, RUN_CONFIG, research_actions=context)
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertFalse(result['investability_readiness']['corporate_action_ready'])
+        self.assertFalse(result['investability_readiness']['official_backtest_ready'])
+        for key in ('metrics', 'benchmark_metrics', 'comparison'):
+            self.assertNotIn(key, result)
+
+    def test_same_split_without_context_still_blocks(self):
+        dataset, _ = split_scenario()
+
+        result = run_backtest(dataset, RUN_CONFIG)
+
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertTrue(any('계산에 반영되지 않은 기업행사' in issue for issue in result['issues']))
+        self.assertTrue(result['nav'].empty or len(result['nav']) == 0)
+        self.assertNotIn('metrics', result)
+
+
 class BacktestTests(unittest.TestCase):
     def test_run_uses_friday_signal_and_monday_open_then_reconciles_nav(self):
         result = run_backtest(
