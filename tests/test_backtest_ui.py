@@ -1,5 +1,8 @@
+import ast
 import unittest
 from pathlib import Path
+
+import pandas as pd
 
 from streamlit.testing.v1 import AppTest
 
@@ -82,6 +85,30 @@ class BacktestUiTests(unittest.TestCase):
         self.assertFalse(report['readiness_labels']['corporate_action'])
         self.assertFalse(report['readiness_labels']['official_backtest'])
         self.assertTrue(report['blocking'])
+
+    def test_ui_never_passes_research_context_and_split_stays_locked(self):
+        root = Path(__file__).resolve().parents[1]
+        for path in (root / 'quantdesk' / 'backtest_ui.py', root / 'app.py'):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'run_backtest':
+                    self.assertEqual(len(node.args), 2, path.name)
+                    self.assertEqual(node.keywords, [], path.name)
+            self.assertNotIn('research_actions', path.read_text(encoding='utf-8'))
+
+        dataset = three_week_fixture()
+        dataset.corporate_actions = pd.DataFrame([{
+            'code': '000100', 'effective_date': '2026-09-16',
+            'action_type': 'split', 'status': 'validated',
+        }])
+        dataset.investability_adapter = FakeInvestabilityAdapter(
+            dataset.snapshots['2026-09-04'].Code, investability_ready=True,
+        )
+        report = readiness_report(dataset, BacktestConfig('2026-09-01', '2026-09-30'))
+
+        self.assertTrue(report['blocking'])
+        self.assertFalse(report['readiness_labels']['corporate_action'])
+        self.assertFalse(report['readiness_labels']['official_backtest'])
 
 
 if __name__ == '__main__':
